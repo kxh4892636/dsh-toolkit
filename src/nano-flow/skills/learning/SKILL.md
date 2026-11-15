@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 整理笔记执行下方流程；制作 Anki 卡片时读取 [ANKI.md](ANKI.md)，可独立执行。
 
-笔记约束分两类，动手前按 [RULE.md](RULE.md) 判定：知识型要可复述，使用型要可照抄。
+笔记约束分两类，动手前按 [RULE.md](RULE.md) 判定：知识型要可复述，使用型要可照抄。材料有层级骨架、读者先要全貌时写**导图笔记**，格式与校验见 [MINDMAP.md](MINDMAP.md)。
 
 ## 1. 覆盖账本
 
