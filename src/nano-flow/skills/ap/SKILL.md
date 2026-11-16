@@ -1,7 +1,7 @@
 ---
 name: ap
-description: 调研用户输入使用；交给多个 subagent 并行调查，主会话不阻塞，汇总各自结论后再回答。
+description: 调研用户输入使用；交给多个只读 subagent 并行调查，主会话只做拆分与汇总。
 disable-model-invocation: true
 ---
 
-使用 subagent, 不堵塞主 session, 并行调研用户输入, 只读操作;
+主会话只做拆分与汇总, 调研段交给只读 subagent 并行调查, 不堵塞主会话，只读操作;
