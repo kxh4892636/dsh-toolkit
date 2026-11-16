@@ -221,14 +221,17 @@ metadata:
 - 预设不挂载压缩插件。轮转挂在**宿主半**：用户每发一条**排队**消息（queue）时，先按会话 id
   找到存活会话，再用日志里最后一条 `agent-preset/selected` 判断它是否跑 Nano Flow（live header
   的 `agentPreset` 在恢复会话时不可靠），然后读 `tokenMeter.contextPressure` 的
-  `projectedTokens ?? pressureTokens`。达到 `rotateAt × contextWindow` 时创建新会话（同一 cwd
-  与预设），把 seed（上一会话已轮转、只读恢复当前 Plan、自动校验结论、轮转前绑定的只读线索、
-  最末是上一轮模型输出的 `<rotation-last-output>` 块）与本次触发原文（包在 `<rotation-prior-input>` 里，紧跟输出块之后）
-  一起发给它，新 prompt 被接受后**先归档、再物理删除**旧会话（归档会让客户端立刻离开旧会话，
-  所以切视图挂在客户端根上下文，见下一段）。新会话创建或发送失败时回落到
-  旧会话，消息不丢。轮转只能自动触发，没有手动命令；会话 id 不随轮转变化，客户端不需要跟随跳转。
-- 轮转种子不继承绑定：新会话首轮必须先 `nano_flow_bind`，否则看板与日志不出现；seed 同时要求新会话只读
-  `spec.md` 与 `notes_index.md`，所以每轮结束前必须把检查点写回磁盘：spec 的进度与恢复入口、note 的 status / next_step。
+  `projectedTokens ?? pressureTokens`。达到 `rotateAt × contextWindow` 时**不换会话**：把表面节点
+  `nodes[1..]` 整体换成一条 seed 消息 —— 先追加 `compaction/prune` 记下遮蔽区间与逐节点计价，
+  紧跟一条带 `surfaceOp.replace` 的 `user/message`，再 `sessions.flush()` 落盘。日志只追加不删，
+  会话 id 不变，所以同一会话上的子 agent、后台 job 与 Plan 绑定原样存活，客户端不需要跟随跳转。
+- seed 五段：固定首句、恢复当前 Plan（已绑定则注明「无需再 `nano_flow_bind`」）、只读报告
+  `spec.md` 与 `notes_index.md`、自动 `nano_flow_check` 的结论、最末是上一轮模型输出的
+  `<reset-last-output>` 块（保尾截断到 8 KB）。被遮蔽的旧历史不会回到模型视野，重启、fork、
+  导出同样看不到；所以每轮结束前必须把检查点写回磁盘：spec 的进度与恢复入口、note 的 status / next_step。
+- 两道闸：只在上一轮已 `turn/end` 后动表面（mid-turn 遮蔽会抽掉当前步要用的历史）；一次重置后
+  必须已产出过新的 assistant 消息才允许再次重置，避免同一占用反复重置。轮转只能自动触发，
+  没有手动命令。
 - 轮转不写在预设行里：预设行读不到 `ctx.agent`（cordis 对服务属性做 inject 守卫），而根插件
   又不能声明 `agent` 依赖（根上下文里没有 agent）。`nano-flow-mount.json` 的 `stages` 记录每一步，
   挂载/轮转是否生效看这个文件即可。
@@ -250,8 +253,10 @@ metadata:
 4. 在空工作区让模型建 domain、plan、note：出现 `CONTEXT-MAP.md`、域文档骨架、`GUIDE.md` 空模板、
    `spec.md`、`notes_index.md`；`nano_flow_check` 通过并列出更新的索引。
 5. 打开 toolkit 面板的"Nano Flow 设置"，改一个上限并保存；重启后值保持，下一次 check 生效。
-6. 把轮转阈值调到很低（如 0.05），再发一条排队消息：旧会话被物理删除，新会话只读
-   `spec.md` 与 `notes_index.md` 并报告进度。
+6. 把轮转阈值调到很低（如 0.05），再发一条排队消息：会话 id 不变、GUI 历史仍在，模型按 seed
+   开局只读 `spec.md` 与 `notes_index.md` 并报告进度；会话日志里恰好多出一条 `compaction/prune`
+   与紧邻的 `surfaceOp.replace`，下一条请求的 `usage.totalTokens` 回落到 seed 规模；重置前起的
+   子 agent 与后台 job 仍存活。
 7. 挂载诊断：`$DSH_HOME/toolkit/nano-flow-mount.json` 的 `stages` 应同时有 `entry`
    (`via: preset`)、`apply`、`ready` 与 `rotation`；缺哪个就说明哪一步没生效。
 8. 把一条 note 置 `blocked` 但不写 `reason`：`nano_flow_check` 报"缺少 reason"；补上后通过，
