@@ -15,6 +15,9 @@ const RESULT_LIMIT = 4096;
 /** 单轮 assistant 文本上限（字节）。 */
 export const ASSISTANT_LIMIT = 8192;
 
+/** 单轮 user 文本上限（字节）；上下文重置会把整段 seed 当 user 消息写进来。 */
+export const USER_LIMIT = 8192;
+
 /** 绑定表文件名。 */
 export const BINDINGS_FILE = "nano-flow-plan-bindings.json";
 
@@ -223,6 +226,7 @@ export const buildTurnRecord = (options: {
     });
   }
   const assistant = truncateText(assistants.join("\n\n"), ASSISTANT_LIMIT);
+  const user = truncateText(users.join("\n\n"), USER_LIMIT);
   const startMs = startedAt ?? (Number.isFinite(first) ? options.events[0]?.time : undefined);
   const endMs = endedAt ?? options.events[options.events.length - 1]?.time;
   return {
@@ -232,7 +236,7 @@ export const buildTurnRecord = (options: {
     turn,
     startedAt: new Date(startMs ?? 0).toISOString(),
     endedAt: new Date(endMs ?? startMs ?? 0).toISOString(),
-    user: users.join("\n\n"),
+    user: user.text,
     assistant: assistant.text,
     tools,
     usage,
@@ -339,42 +343,6 @@ export const inheritedPlanDirectory = (
   if (binding === undefined) return undefined;
   const directory = resolvePlanDirectory(binding, workspace, exists);
   return exists(directory) ? directory : undefined;
-};
-
-/**
- * 轮转时把旧会话的绑定过继给新会话。
- *
- * 只看旧会话自己那条绑定，不猜工作区里的 Plan；Plan 目录已不存在时不过继。旧条目保留，
- * 由启动时的死条目回收清理。
- * @param table - 当前绑定表。
- * @param previousSessionId - 被轮转的旧会话 id。
- * @param sessionId - 新会话 id。
- * @param workspace - 工作区根。
- * @param exists - 目录存在性判断（测试可注入）。
- * @param now - 过继时间（测试可注入）。
- * @returns 写入新条目后的表与被过继的 Plan 目录；旧会话无绑定或目录失效时 undefined。
- */
-export const adoptBinding = (
-  table: BindingTable,
-  previousSessionId: string,
-  sessionId: string,
-  workspace: string,
-  exists: DirectoryExists = existsSync,
-  now: Date = new Date(),
-): { readonly table: BindingTable; readonly planDirectory: string } | undefined => {
-  const planDirectory = inheritedPlanDirectory(table, previousSessionId, workspace, exists);
-  if (planDirectory === undefined) return undefined;
-  return {
-    table: {
-      ...table,
-      [sessionId]: {
-        planPath: planRelativePath(workspace, planDirectory),
-        cwd: workspace,
-        boundAt: now.toISOString(),
-      },
-    },
-    planDirectory,
-  };
 };
 
 /** 解析 Plan 目录的相对路径（相对工作区，正斜杠）。 */

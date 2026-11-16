@@ -4,7 +4,6 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
-  adoptBinding,
   appendJsonLine,
   BINDINGS_FILE,
   buildTurnRecord,
@@ -17,6 +16,7 @@ import {
   readBindings,
   resolvePlanDirectory,
   truncateText,
+  USER_LIMIT,
   writeBindings,
   type SessionEventLike,
 } from "./plan-log.js";
@@ -113,42 +113,6 @@ describe("inheritedPlanDirectory", () => {
   });
 });
 
-describe("adoptBinding", () => {
-  const table = {
-    "session-old": {
-      planPath: ".agents/domains/dsh/plans/active/x",
-      cwd: "C:\\work",
-      boundAt: "2026-11-08T00:00:00.000Z",
-    },
-  };
-
-  it("writes the previous plan onto the new session and keeps the old entry", () => {
-    const adopted = adoptBinding(
-      table,
-      "session-old",
-      "session-new",
-      "C:\\work",
-      () => true,
-      new Date("2026-11-13T00:00:00.000Z"),
-    );
-    expect(adopted?.planDirectory).toBe(join("C:\\work", ".agents/domains/dsh/plans/active/x"));
-    expect(adopted?.table["session-new"]).toEqual({
-      planPath: ".agents/domains/dsh/plans/active/x",
-      cwd: "C:\\work",
-      boundAt: "2026-11-13T00:00:00.000Z",
-    });
-    // 旧条目保留：轮转失败回落到旧会话时，它还得有绑定。
-    expect(adopted?.table["session-old"]).toEqual(table["session-old"]);
-  });
-
-  it("adopts nothing when the previous session has no usable binding", () => {
-    expect(adoptBinding(table, "session-unknown", "session-new", "C:\\work")).toBeUndefined();
-    expect(
-      adoptBinding(table, "session-old", "session-new", "C:\\work", () => false),
-    ).toBeUndefined();
-  });
-});
-
 describe("buildTurnRecord", () => {
   it("compacts one turn into a single record", () => {
     const record = buildTurnRecord({
@@ -176,6 +140,15 @@ describe("buildTurnRecord", () => {
         resultBytes: 13,
       },
     ]);
+  });
+
+  it("bounds an oversized user text", () => {
+    const record = buildTurnRecord({
+      sessionId: "s",
+      turn: 1,
+      events: [event("user/message", 0, { content: [{ type: "text", text: "甲".repeat(4000) }] })],
+    });
+    expect(Buffer.byteLength(record?.user ?? "", "utf8")).toBeLessThanOrEqual(USER_LIMIT);
   });
 
   it("marks failed tools and missing results", () => {

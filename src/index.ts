@@ -27,8 +27,8 @@ import {
   type PlanLogService,
 } from "./nano-flow/planning/plan-log-service.js";
 import {
-  adoptBinding,
   BINDINGS_FILE,
+  inheritedPlanDirectory,
   planRelativePath,
   pruneBindings,
   readBindings,
@@ -220,17 +220,17 @@ export const apply = (ctx: Context, config: Config = {}): void => {
     });
     child.effect(() => disposeRoutes, "toolkit: routes");
   });
-  // 会话轮转挂在宿主层：预设行看不到 `ctx.agent`（cordis 的 inject 守卫），只能由这里按
-  // 会话日志里的预设选择判定，再包装 `sessionController.prompt`。
+  // 上下文重置挂在宿主层：预设行看不到 `ctx.agent`（cordis 的 inject 守卫），只能由这里按
+  // 会话日志里的预设选择判定，再包装 `sessionController.prompt`。重置在同一会话内遮蔽历史，
+  // 因此子 agent 与后台 job 不受影响。
   ctx.inject(["sessionController"], (child: Context) => {
     child.effect(() => {
       /**
-       * 轮转后自动跑一次校验（等价于执行 `nano_flow_check`）：校验领域文档，结论由轮转
+       * 重置前自动跑一次校验（等价于执行 `nano_flow_check`）：校验领域文档，结论由重置
        * 写进 seed。
        */
       const autoCheck = async (params: {
         sessionId: string;
-        previousSessionId: string;
         workspace: string;
       }): Promise<{ readonly text: string } | undefined> => {
         const domainsPath = config.domainRoot ?? DEFAULT_DOMAIN_ROOT;
@@ -242,9 +242,9 @@ export const apply = (ctx: Context, config: Config = {}): void => {
         });
         const lines: string[] = [];
         if (result.ok) {
-          lines.push("轮转后自动执行 `nano_flow_check`：领域文档校验通过，索引已刷新。");
+          lines.push("重置前自动执行 `nano_flow_check`：领域文档校验通过，索引已刷新。");
         } else {
-          lines.push(`轮转后自动执行 \`nano_flow_check\` 失败，共 ${result.errors.length} 项：`);
+          lines.push(`重置前自动执行 \`nano_flow_check\` 失败，共 ${result.errors.length} 项：`);
           lines.push(formatIssues(result.errors.slice(0, 5)));
           if (result.errors.length > 5)
             lines.push(`…还有 ${result.errors.length - 5} 项，跑一次工具看全部。`);
@@ -252,27 +252,21 @@ export const apply = (ctx: Context, config: Config = {}): void => {
         return { text: lines.join("\n") };
       };
       /**
-       * 轮转过继绑定：旧会话自己那条绑定仍指向存在的 Plan 时，写进新会话 id，看板与
-       * 轨迹续在同一 Plan 上。只认旧会话的绑定，不猜工作区里有几个 active Plan。
-       * @param params - 新旧会话 id 与工作区根。
-       * @returns 过继到的 Plan 引用；旧会话无绑定或目录失效时 undefined。
+       * 重置前读本会话的 Plan 绑定：同一会话内绑定不变，只写进 seed 的恢复行。
+       * @param params - 会话 id 与工作区根。
+       * @returns Plan 引用；没有绑定或目录失效时 undefined。
        */
-      const inheritPlanBinding = async (params: {
+      const boundPlan = async (params: {
         sessionId: string;
-        previousSessionId: string;
         workspace: string;
       }): Promise<string | undefined> => {
-        const file = bindingsFilePath(config);
-        const adopted = adoptBinding(
-          await readBindings(file),
-          params.previousSessionId,
+        const directory = inheritedPlanDirectory(
+          await readBindings(bindingsFilePath(config)),
           params.sessionId,
           params.workspace,
-          (directory) => existsSync(directory),
+          (candidate) => existsSync(candidate),
         );
-        if (adopted === undefined) return undefined;
-        await writeBindings(file, adopted.table);
-        return planRefFromDirectory(adopted.planDirectory);
+        return directory === undefined ? undefined : planRefFromDirectory(directory);
       };
       const rotation = createRotation({
         services: hostServices(child),
@@ -280,13 +274,12 @@ export const apply = (ctx: Context, config: Config = {}): void => {
         domainRoot: config.domainRoot ?? DEFAULT_DOMAIN_ROOT,
         settings: () => runtime.nanoFlow.get(),
         autoCheck,
-        adoptBinding: inheritPlanBinding,
+        boundPlan,
         sessionOf: (sessionId: string) => {
           const sessions = serviceOf<HostSessionStore>(child, "sessions");
           const session = sessions?.get(sessionId);
           return session as unknown as RotationSession | undefined;
         },
-        onRotated: (from, to) => runtime.rememberRotation(from, to),
       });
       const disposeRotation = rotation.attach();
       recordMount("rotation", {
