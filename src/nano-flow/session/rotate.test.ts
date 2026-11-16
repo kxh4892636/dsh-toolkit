@@ -114,7 +114,7 @@ const makeHarness = (
   }));
   const flush = vi.fn(async () => true);
   const warn = vi.fn();
-  const controller = { create: vi.fn(), prompt: originalPrompt };
+  const controller = { prompt: originalPrompt };
   const services = {
     get: (name: string) => {
       if (name === "tokenMeter") {
@@ -272,7 +272,7 @@ describe("in-place reset", () => {
     // 用户原文原样发出，不再包 <rotation-prior-input>。
     expect(textsOf(sent)).toEqual(["用户消息"]);
     expect(String((seed?.data["content"] as { text?: string }[] | undefined)?.[0]?.text)).toContain(
-      "只读报告",
+      "报告进度与可推进队列",
     );
   });
 
@@ -368,7 +368,7 @@ describe("reset seed", () => {
     expect(autoCheck).toHaveBeenCalledWith({ sessionId: "session-1", workspace: "C:\\work" });
     const seed = seedText(harness.session);
     expect(seed.indexOf(summary)).toBeLessThan(seed.indexOf(`<${LAST_OUTPUT_TAG}>`));
-    expect(seed).toContain("只读报告");
+    expect(seed).toContain("报告进度与可推进队列");
   });
 
   it("names the bound plan and says no bind call is needed", async () => {

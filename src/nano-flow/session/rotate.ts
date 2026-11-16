@@ -70,7 +70,6 @@ export interface PromptRequestLike {
 
 /** 会话控制器的提示注入。 */
 interface SessionControllerLike {
-  create(request: { cwd?: string; agentPreset?: string }): Promise<{ sessionId: string }>;
   prompt(request: PromptRequestLike, signal: AbortSignal): Promise<{ accepted: boolean }>;
 }
 
@@ -247,7 +246,9 @@ const buildSeed = async (
       "恢复当前 Plan：先按 `.agents/domains/CONTEXT-MAP.md` 定位本会话的业务域，工作区里有多个 active 的 Plan 时先问用户是哪个",
     );
   }
-  parts.push("读 spec.md 与 notes_index.md，只读报告进度与可推进队列，等用户放行后再执行。");
+  parts.push(
+    "读 spec.md 与 notes_index.md，先报告进度与可推进队列，再处理本条消息（它若已指明要做什么，直接做）。",
+  );
   if (seed.checked !== undefined) parts.push(seed.checked);
   if (seed.lastOutput !== undefined) {
     parts.push(
@@ -416,6 +417,7 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
     if (resetAt !== undefined && !advancedSince(events, resetAt)) return fallback();
 
     rotating.add(session.id);
+    let cleared = false;
     try {
       const header = session.header ?? {};
       const workspace =
@@ -430,10 +432,15 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
       });
       const landed = await clearSurface(surface, seed);
       if (landed === undefined) return fallback();
+      cleared = true;
       resetSeqs.set(session.id, landed);
       return await original(request, signal);
     } catch (error) {
-      services.logger.warn(`nano-flow: in-place reset failed: ${describeError(error)}`);
+      // 遮蔽是 append-only，落地后无法回滚；这条失败必须能与「没重置成功」区分开，否则现场只剩一次莫名其妙的失忆。
+      const stage = cleared
+        ? "history already shadowed but prompt was rejected"
+        : "in-place reset failed";
+      services.logger.warn(`nano-flow: ${stage}: ${describeError(error)}`);
       return fallback();
     } finally {
       rotating.delete(session.id);
