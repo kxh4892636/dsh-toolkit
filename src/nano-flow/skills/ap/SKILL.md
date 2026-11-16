@@ -1,5 +1,5 @@
 ---
-name: pp
+name: ap
 description: 调研用户输入使用；交给多个 subagent 并行调查，主会话不阻塞，汇总各自结论后再回答。
 disable-model-invocation: true
 ---
