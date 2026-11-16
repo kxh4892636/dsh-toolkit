@@ -3,7 +3,6 @@ import {
   DEFAULT_NANO_FLOW_SETTINGS,
   TOOLKIT_NANO_FLOW_NOTES_PATH,
   TOOLKIT_NANO_FLOW_PATH,
-  TOOLKIT_NANO_FLOW_ROTATION_PATH,
   TOOLKIT_STATE_PATH,
   TOOLKIT_UNDO_PATH,
   type NotesSnapshot,
@@ -95,7 +94,6 @@ const setup = async () => {
       update: (patch: unknown) => settings.update(patch),
     },
     notes,
-    rotation: () => ({ from: "session-1", to: "session-2", at: "2026-11-08T09:00:00.000Z" }),
     logger: { warn: vi.fn() },
   });
   const call = (path: string, request: Request): Promise<Response> => {
@@ -121,21 +119,6 @@ const request = (
 };
 
 describe("toolkit routes", () => {
-  it("returns the latest rotation for the client to follow", async () => {
-    const { call } = await setup();
-    const response = await call(
-      TOOLKIT_NANO_FLOW_ROTATION_PATH,
-      request(TOOLKIT_NANO_FLOW_ROTATION_PATH),
-    );
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as { rotation: { from: string; to: string } | null };
-    expect(body.rotation).toEqual({
-      from: "session-1",
-      to: "session-2",
-      at: "2026-11-08T09:00:00.000Z",
-    });
-  });
-
   it("returns the tool catalog", async () => {
     const { call } = await setup();
     const response = await call(TOOLKIT_STATE_PATH, request(TOOLKIT_STATE_PATH));
@@ -298,7 +281,7 @@ describe("toolkit routes", () => {
 
   it("unregisters all routes on dispose", async () => {
     const { dispose, routes } = await setup();
-    expect(routes.size).toBe(6);
+    expect(routes.size).toBe(5);
     dispose();
     expect(routes.size).toBe(0);
   });

@@ -2,12 +2,10 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ClientContext, ClientSlotOptions } from "./contract.js";
 import { apply, inject } from "./index.js";
-import { resetRotationFollow, rotationFollowInstalled } from "./rotation-follow.js";
 import { toolkitClientState } from "./state.js";
 
 afterEach(() => {
   toolkitClientState.reset();
-  resetRotationFollow();
   vi.unstubAllGlobals();
 });
 
@@ -16,7 +14,7 @@ interface Registration {
   readonly component: unknown;
 }
 
-const harness = (options: { readonly inject?: ClientContext["inject"] } = {}) => {
+const harness = () => {
   const registrations: Registration[] = [];
   const injections: string[] = [];
   const effects: string[] = [];
@@ -37,7 +35,6 @@ const harness = (options: { readonly inject?: ClientContext["inject"] } = {}) =>
       const dispose = callback();
       return typeof dispose === "function" ? dispose : () => {};
     },
-    ...(options.inject === undefined ? {} : { inject: options.inject }),
   } satisfies ClientContext;
   return { ctx, registrations, injections, effects };
 };
@@ -96,40 +93,6 @@ describe("client plugin entry", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(toolkitClientState.isEnabled("undo-turn")).toBe(true);
     toolkitClientState.reset();
-  });
-
-  it("installs the root rotation follow through the uiWorkspace injection", () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("{}", { status: 500 })),
-    );
-    const injected: (readonly string[])[] = [];
-    const workspace = {
-      openSession: vi.fn(async () => undefined),
-      selection: {
-        getSnapshot: () => ({ sessionId: "session-1" }),
-        subscribe: () => () => {},
-      },
-    };
-    const scope = {
-      get: (key: string) => (key === "uiWorkspace" ? workspace : undefined),
-      effect: (callback: () => (() => void) | void) => {
-        const dispose = callback();
-        return typeof dispose === "function" ? dispose : () => {};
-      },
-    };
-    const { ctx } = harness({
-      inject: (dependencies, callback) => {
-        injected.push([...dependencies]);
-        callback(scope as unknown as ClientContext);
-        return undefined;
-      },
-    });
-
-    apply(ctx);
-
-    expect(injected).toEqual([["uiWorkspace"]]);
-    expect(rotationFollowInstalled()).toBe(true);
   });
 
   it("resets the shared store when the plugin unloads", () => {

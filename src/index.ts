@@ -5,7 +5,6 @@ import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 import z from "@deepseek-ai/schemastery";
 import type Schema from "@deepseek-ai/schemastery";
 import type {
-  NanoFlowRotation,
   NanoFlowSettings,
   NotesSnapshot,
   UndoAvailability,
@@ -216,7 +215,6 @@ export const apply = (ctx: Context, config: Config = {}): void => {
       notes: {
         of: (sessionId: string) => runtime.notesOf(sessionId),
       },
-      rotation: () => runtime.lastRotation(),
     });
     child.effect(() => disposeRoutes, "toolkit: routes");
   });
@@ -329,10 +327,6 @@ interface ToolkitRuntime {
   };
   /** 当前会话要展示的未完成 note 快照；不写会话日志。 */
   notesOf(sessionId: string): NotesSnapshot | null;
-  /** 最近一次轮转记录（from → to）；本次运行还没轮转过时为 null。 */
-  lastRotation(): NanoFlowRotation | null;
-  /** 记录一次轮转，供客户端切换到新会话。 */
-  rememberRotation(from: string, to: string): void;
   inspect(sessionId: string): UndoAvailability;
   undo(sessionId: string): Promise<UndoTurnResponse>;
   /** 工作区注册表就绪后，把日志已删的会话从归档集合里摘掉。 */
@@ -358,8 +352,6 @@ const createRuntime = (ctx: Context, config: Config, planLog: PlanLogService): T
     createNanoFlowTool({ entryUrl: nanoFlowEntryUrl(import.meta.url) }),
   ];
   const registry = new ToolkitRegistry({ ctx, tools, store, logger });
-  /** 最近一次轮转（内存即可：命令与客户端切换在同一次宿主运行内完成）。 */
-  let lastRotation: NanoFlowRotation | undefined;
   /** 广播「会话已移除」：`api-session/removed` 是宿主销毁会话时客户端依赖的那条事件。 */
   const registerRemoval = (sessionId: string): void => {
     // 会话没了，轨迹服务也要放开它的读句柄；否则每次轮转留一个句柄。
@@ -466,12 +458,6 @@ const createRuntime = (ctx: Context, config: Config, planLog: PlanLogService): T
     },
     hiddenSessions() {
       return store.snapshot().hiddenSessionIds;
-    },
-    lastRotation() {
-      return lastRotation ?? null;
-    },
-    rememberRotation(from: string, to: string) {
-      lastRotation = { from, to, at: new Date().toISOString() };
     },
     rebindSession,
     async cleanupArchive(child: Context) {

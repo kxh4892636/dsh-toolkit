@@ -2,12 +2,9 @@ import {
   TOOLKIT_HIDDEN_PATH,
   TOOLKIT_NANO_FLOW_NOTES_PATH,
   TOOLKIT_NANO_FLOW_PATH,
-  TOOLKIT_NANO_FLOW_ROTATION_PATH,
   TOOLKIT_STATE_PATH,
   TOOLKIT_UNDO_PATH,
   type NanoFlowNotesResponse,
-  type NanoFlowRotation,
-  type NanoFlowRotationResponse,
   type NanoFlowSettings,
   type NanoFlowSettingsResponse,
   type NotesSnapshot,
@@ -43,8 +40,6 @@ interface ToolkitRoutesOptions {
   readonly notes?: {
     readonly of: (sessionId: string) => NotesSnapshot | null;
   };
-  /** 最近一次轮转（from → to）；缺省时路由返回 null。 */
-  readonly rotation?: () => NanoFlowRotation | null;
   readonly logger: { warn(message: string): void };
 }
 
@@ -99,20 +94,12 @@ export const registerToolkitRoutes = (options: ToolkitRoutesOptions): (() => voi
         json<ToolkitHiddenResponse>({ ids: [...(options.hiddenSessions?.() ?? [])] }),
       ),
   });
-  const rotation = options.connection.fetch.register({
-    path: TOOLKIT_NANO_FLOW_ROTATION_PATH,
-    methods: ["GET"],
-    requestBody: "buffered",
-    fetch: () =>
-      Promise.resolve(json<NanoFlowRotationResponse>({ rotation: options.rotation?.() ?? null })),
-  });
   return () => {
     state();
     undo();
     nanoFlow();
     notes();
     hidden();
-    rotation();
   };
 };
 

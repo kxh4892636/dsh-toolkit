@@ -26,29 +26,6 @@ interface ClientSlots {
   register(options: ClientSlotOptions, component: ClientSlotComponent): () => void;
 }
 
-/**
- * 当前会话的导航选择 store：`dsh-client-ui-workspace/lib/client.js` 的
- * `selection`（持久化键 `dsh.sessions.current`）。归档会把当前会话清空，
- * 轮转跟随靠它感知「视图已离开旧会话」。
- */
-export interface ClientSelectionStore {
-  getSnapshot(): { readonly sessionId?: string };
-  /** 选择变化通知；宿主版本缺该方法时退化为轮询。 */
-  subscribe?(listener: () => void): () => void;
-}
-
-/**
- * 工作区导航：`uiWorkspace.openSession(id)`（`dsh-client-ui-workspace/lib/client.js:1471-1473`）。
- *
- * 宿主实装是同步换主视图引用（返回 void），不能对返回值 `.catch()`；返回类型用 `unknown`
- * 让调用方按“可能是同步也可能是 Promise”处理。
- */
-export interface ClientWorkspace {
-  openSession(sessionId: string): unknown;
-  /** 导航选择 store；宿主版本没有时缺省（轮转跟随退化为会话面板轮询）。 */
-  readonly selection?: ClientSelectionStore;
-}
-
 /** 客户端根上下文里本插件会用到的部分。 */
 export interface ClientContext {
   readonly slots: ClientSlots;
