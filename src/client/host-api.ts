@@ -283,14 +283,28 @@ const parseAvailability = (body: unknown): UndoAvailability => {
   };
 };
 
+/**
+ * 解析就地撤回的结果：`{boundary, seq, prompt}`。
+ *
+ * 现有路由把结果平铺在响应体上；同时容忍契约文里写的 `{ok, value}` 信封，
+ * 免得宿主换个包装就让客户端整条路径失效。
+ * @param body - 响应体。
+ * @returns 撤回切点与原文；形状不对时为 undefined。
+ */
 const parseUndoResult = (body: unknown): UndoTurnResponse | undefined => {
   if (typeof body !== "object" || body === null) return undefined;
-  const candidate = body as Partial<UndoTurnResponse>;
-  if (typeof candidate.childSessionId !== "string" || candidate.childSessionId === "") {
+  const envelope = body as { ok?: unknown; value?: unknown };
+  const payload =
+    envelope.ok === true && typeof envelope.value === "object" ? envelope.value : body;
+  const candidate = payload as Partial<UndoTurnResponse>;
+  const { boundary, seq } = candidate;
+  if (typeof boundary !== "number" || !Number.isSafeInteger(boundary) || boundary < 0) {
     return undefined;
   }
+  if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < boundary) return undefined;
   return {
-    childSessionId: candidate.childSessionId,
+    boundary,
+    seq,
     prompt: typeof candidate.prompt === "string" ? candidate.prompt : "",
   };
 };

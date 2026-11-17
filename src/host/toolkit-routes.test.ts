@@ -74,7 +74,11 @@ const setup = async () => {
   await settings.load();
   const undo = {
     inspect: vi.fn(() => ({ available: true, prompt: "帮我改一下" })),
-    run: vi.fn(async () => ({ childSessionId: "session-child", prompt: "帮我改一下" })),
+    run: vi.fn(async (_sessionId: string, _anchor?: { messageId?: string; boundary?: number }) => ({
+      boundary: 4,
+      seq: 9,
+      prompt: "帮我改一下",
+    })),
   };
   const notesSnapshot: NotesSnapshot = {
     planName: "2026-11-08-演示",
@@ -188,7 +192,8 @@ describe("toolkit routes", () => {
       TOOLKIT_UNDO_PATH,
       request(TOOLKIT_UNDO_PATH, { method: "POST", body: { sessionId: "s1" } }),
     );
-    expect(await ok.json()).toEqual({ childSessionId: "session-child", prompt: "帮我改一下" });
+    expect(await ok.json()).toEqual({ boundary: 4, seq: 9, prompt: "帮我改一下" });
+    expect(undo.run).toHaveBeenCalledWith("s1", undefined);
 
     undo.run.mockRejectedValueOnce(new UndoUnavailableError("no-previous-turn", "no earlier turn"));
     const failed = await call(
@@ -197,6 +202,42 @@ describe("toolkit routes", () => {
     );
     expect(failed.status).toBe(409);
     expect(await failed.json()).toMatchObject({ error: "no-previous-turn" });
+  });
+
+  it("forwards the optional recall anchors of the undo request", async () => {
+    const { call, undo } = await setup();
+    await call(
+      TOOLKIT_UNDO_PATH,
+      request(TOOLKIT_UNDO_PATH, {
+        method: "POST",
+        body: { sessionId: "s1", messageId: "m2", boundary: 4 },
+      }),
+    );
+    expect(undo.run).toHaveBeenCalledWith("s1", { messageId: "m2", boundary: 4 });
+
+    await call(
+      TOOLKIT_UNDO_PATH,
+      request(TOOLKIT_UNDO_PATH, { method: "POST", body: { sessionId: "s1", boundary: 3 } }),
+    );
+    expect(undo.run).toHaveBeenLastCalledWith("s1", { boundary: 3 });
+  });
+
+  it("rejects malformed undo bodies", async () => {
+    const { call, undo } = await setup();
+    for (const body of [
+      {},
+      { sessionId: "" },
+      { sessionId: "s1", boundary: "4" },
+      { sessionId: "s1", boundary: -1 },
+      { sessionId: "s1", messageId: 3 },
+    ]) {
+      const response = await call(
+        TOOLKIT_UNDO_PATH,
+        request(TOOLKIT_UNDO_PATH, { method: "POST", body }),
+      );
+      expect(response.status).toBe(400);
+    }
+    expect(undo.run).not.toHaveBeenCalled();
   });
 
   it("refuses undo when the tool is disabled", async () => {

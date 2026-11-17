@@ -14,22 +14,23 @@ interface Registration {
   readonly component: unknown;
 }
 
-const harness = () => {
+const harness = (services: Record<string, unknown> = {}) => {
   const registrations: Registration[] = [];
   const injections: string[] = [];
   const effects: string[] = [];
   const ctx = {
     slots: {
-      inject: (key: string, contribute: () => () => void) => {
+      inject: (key: string, contribute: () => (() => void) | void) => {
         injections.push(key);
-        contribute();
+        return contribute();
       },
       register: (options: ClientSlotOptions, component: unknown) => {
         registrations.push({ options, component });
         return () => {};
       },
+      entries: () => [],
     },
-    get: () => undefined,
+    get: (key: string) => services[key],
     effect: (callback: () => (() => void) | void, label?: string) => {
       effects.push(label ?? "");
       const dispose = callback();
@@ -93,6 +94,35 @@ describe("client plugin entry", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(toolkitClientState.isEnabled("undo-turn")).toBe(true);
     toolkitClientState.reset();
+  });
+
+  it("installs the recalled-row hiding next to the seat registrations", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("{}", { status: 500 })),
+    );
+    const registered: string[] = [];
+    const events = {
+      register: (definition: { kind: string }) => {
+        registered.push(definition.kind);
+        return () => {};
+      },
+      entries: () => [],
+      subscribe: () => () => {},
+    };
+    const { ctx, injections, registrations, effects } = harness({
+      uiConversation: { events },
+    });
+    apply(ctx);
+    // 座位注册同一处：先抢 user 格（priority -1），再装 definition。
+    expect(injections).toContain("conversation.chat.node");
+    expect(registrations.at(-1)?.options).toMatchObject({
+      name: "conversation.chat.node",
+      key: "user",
+      priority: -1,
+    });
+    expect(registered).toEqual(["toolkit-recall"]);
+    expect(effects).toContain("toolkit: recall hiding");
   });
 
   it("resets the shared store when the plugin unloads", () => {

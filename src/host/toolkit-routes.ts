@@ -16,17 +16,17 @@ import {
   type UndoTurnResponse,
 } from "../contract.js";
 import { UnknownToolError, type ToolkitRegistry } from "./toolkit-registry.js";
-import { UndoUnavailableError } from "./undo/undo-turn.js";
+import { UndoUnavailableError, type UndoAnchor } from "./undo/undo-turn.js";
 import { describeError } from "../shared/errors.js";
 import { isRecord } from "../shared/record.js";
 
 /** 宿主路由注册所需的能力。 */
 interface ToolkitRoutesOptions {
   readonly registry: ToolkitRegistry;
-  /** 撤回能力；宿主缺 `sessionController` 时缺省，此时撤回路由返回不可用。 */
+  /** 撤回能力；宿主缺会话存储时缺省，此时撤回路由返回不可用。 */
   readonly undo?: {
     readonly inspect: (sessionId: string) => UndoAvailability;
-    readonly run: (sessionId: string) => Promise<UndoTurnResponse>;
+    readonly run: (sessionId: string, anchor?: UndoAnchor) => Promise<UndoTurnResponse>;
   };
   readonly connection: ToolkitRouteRegistry;
   /** 已撤回、应在客户端隐藏的会话 id。 */
@@ -174,11 +174,13 @@ const handleUndo = async (options: ToolkitRoutesOptions, request: Request): Prom
   if (request.method === "GET") return inspectUndo(options, request);
   const parsed = await readJson(request);
   if (parsed === undefined) return failure(400, "invalid-body", "request body is not JSON");
-  const sessionId = asSessionId(parsed);
-  if (sessionId === undefined)
-    return failure(400, "invalid-body", 'expected {"sessionId": string}');
+  const undoRequest = asUndoRequest(parsed);
+  if (undoRequest === undefined) {
+    return failure(400, "invalid-body", 'expected {"sessionId": string, "messageId"?: string}');
+  }
+  const { sessionId } = undoRequest;
   try {
-    const result = await options.undo.run(sessionId);
+    const result = await options.undo.run(sessionId, undoRequest.anchor);
     return json<UndoTurnResponse>(result);
   } catch (error) {
     if (error instanceof UndoUnavailableError) {
@@ -238,8 +240,24 @@ const asStateRequest = (value: unknown): ToolkitStateRequest | undefined => {
   return { id: record.id, enabled: record.enabled };
 };
 
-const asSessionId = (value: unknown): string | undefined => {
+/** 撤回请求：`sessionId` 必填，`messageId` 与 `boundary` 是可选的锚点。 */
+const asUndoRequest = (value: unknown): { sessionId: string; anchor?: UndoAnchor } | undefined => {
   if (typeof value !== "object" || value === null) return undefined;
-  const sessionId = (value as { sessionId?: unknown }).sessionId;
-  return typeof sessionId === "string" && sessionId !== "" ? sessionId : undefined;
+  const record = value as { sessionId?: unknown; messageId?: unknown; boundary?: unknown };
+  if (typeof record.sessionId !== "string" || record.sessionId === "") return undefined;
+  const anchor: { messageId?: string; boundary?: number } = {};
+  if (record.messageId !== undefined) {
+    if (typeof record.messageId !== "string" || record.messageId === "") return undefined;
+    anchor.messageId = record.messageId;
+  }
+  if (record.boundary !== undefined) {
+    const boundary = record.boundary;
+    if (typeof boundary !== "number" || !Number.isSafeInteger(boundary) || boundary < 0) {
+      return undefined;
+    }
+    anchor.boundary = boundary;
+  }
+  return Object.keys(anchor).length === 0
+    ? { sessionId: record.sessionId }
+    : { sessionId: record.sessionId, anchor };
 };

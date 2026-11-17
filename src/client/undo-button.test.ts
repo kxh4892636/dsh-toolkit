@@ -4,9 +4,9 @@ import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ClientContext } from "./contract.js";
 import { rememberDraft, resetDrafts } from "./draft-restore.js";
-import { applyPendingDraft } from "./undo-button.js";
+import { recalledRanges, resetRecalledRanges } from "./recall-hide.js";
 import { toolkitClientState } from "./state.js";
-import { clearTombstones } from "./tombstones.js";
+import { applyPendingDraft } from "./undo-button.js";
 import { UndoButton } from "./undo-button.js";
 
 const json = (body: unknown, status = 200): Response => {
@@ -18,25 +18,18 @@ const json = (body: unknown, status = 200): Response => {
 
 interface Harness {
   readonly ctx: ClientContext;
-  readonly openSession: ReturnType<typeof vi.fn>;
   readonly requestDraftInitialization: ReturnType<typeof vi.fn>;
   readonly binding: ReturnType<typeof vi.fn>;
-  readonly refresh: ReturnType<typeof vi.fn>;
-  readonly handleSessionRemoved: ReturnType<typeof vi.fn>;
 }
 
 const harness = (bindingAvailable = true): Harness => {
-  const openSession = vi.fn(async () => undefined);
   const requestDraftInitialization = vi.fn(() => "applied" as const);
   const binding = vi.fn(() => {
     if (!bindingAvailable) throw new Error("inactive session");
-    return { sessionId: "session-child" };
+    return { sessionId: "session-source" };
   });
-  const refresh = vi.fn();
-  const handleSessionRemoved = vi.fn();
   const services: Record<string, unknown> = {
-    uiWorkspace: { openSession },
-    sessions: { binding, refresh, handleSessionRemoved },
+    sessions: { binding },
     conversation: { input: { requestDraftInitialization } },
   };
   const ctx: ClientContext = {
@@ -44,25 +37,38 @@ const harness = (bindingAvailable = true): Harness => {
     get: (key: string) => services[key],
     effect: () => () => {},
   };
-  return { ctx, openSession, requestDraftInitialization, binding, refresh, handleSessionRemoved };
+  return { ctx, requestDraftInitialization, binding };
 };
+
+/** 撤回成功的宿主响应：就地墓碑，会话 id 不变。 */
+const undone = (prompt: string, boundary = 10, seq = 20) => json({ boundary, seq, prompt });
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
   toolkitClientState.reset();
   resetDrafts();
+  resetRecalledRanges();
 });
 
 describe("UndoButton", () => {
-  it("asks for confirmation before running the undo", async () => {
-    const { ctx, openSession } = harness();
+  it("asks for confirmation, then hides the range and restores the draft in place", async () => {
+    const { ctx } = harness();
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(json({ available: true, prompt: "上一轮的输入" }))
-      .mockResolvedValueOnce(json({ childSessionId: "session-child", prompt: "上一轮的输入" }));
+      .mockResolvedValueOnce(undone("上一轮的输入"));
     vi.stubGlobal("fetch", fetchMock);
-    const view = render(createElement(UndoButton, { sessionId: "session-source", ctx }));
+    const setDraft = vi.fn();
+    const persistDraft = vi.fn();
+    render(
+      createElement(UndoButton, {
+        sessionId: "session-source",
+        ctx,
+        inputActions: { setDraft, persistDraft },
+      }),
+    );
 
     const button = await screen.findByRole("button", { name: "撤回上一轮" });
     await waitFor(() => expect(button).toHaveProperty("disabled", false));
@@ -72,82 +78,51 @@ describe("UndoButton", () => {
     expect(screen.queryByRole("button", { name: "撤回" })).toBeDefined();
 
     fireEvent.click(within(screen.getByRole("dialog")).getByText("撤回"));
-    await waitFor(() => expect(openSession).toHaveBeenCalledWith("session-child"));
-
-    // 草稿由新会话自己的按钮写入：模拟导航后以子会话 id 重挂载。
-    const setDraft = vi.fn();
-    const persistDraft = vi.fn();
-    view.rerender(
-      createElement(UndoButton, {
-        sessionId: "session-child",
-        ctx,
-        inputActions: { setDraft, persistDraft },
-      }),
-    );
+    // 会话不再切换：行由本地区间表藏掉，原文回到同一个会话的输入框。
     await waitFor(() => expect(setDraft).toHaveBeenCalledWith("上一轮的输入"));
     expect(persistDraft).toHaveBeenCalled();
-    resetDrafts();
+    expect(recalledRanges()).toEqual([{ boundary: 10, end: 20 }]);
+  });
+
+  it("keeps the modal open while busy and closes it after the undo", async () => {
+    const { ctx } = harness();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(json({ available: true, prompt: "x" }))
+        .mockResolvedValueOnce(undone("x", 3, 4)),
+    );
+    render(createElement(UndoButton, { sessionId: "session-source", ctx }));
+    const button = await screen.findByRole("button", { name: "撤回上一轮" });
+    await waitFor(() => expect(button).toHaveProperty("disabled", false));
+    fireEvent.click(button);
+    fireEvent.click(within(screen.getByRole("dialog")).getByText("撤回"));
+    await waitFor(() => expect(recalledRanges()).toEqual([{ boundary: 3, end: 4 }]));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("falls back to the conversation service when the component path did not run", () => {
     const { ctx, requestDraftInitialization } = harness();
-    rememberDraft("session-child", "兜底文本");
-    expect(applyPendingDraft(ctx, "session-child")).toBe(true);
+    rememberDraft("session-source", "兜底文本");
+    expect(applyPendingDraft(ctx, "session-source")).toBe(true);
     expect(requestDraftInitialization).toHaveBeenCalledWith(expect.anything(), {
       prompt: "兜底文本",
       whenDraftExists: "replace",
     });
     // 取走即消费：第二次不再写。
-    expect(applyPendingDraft(ctx, "session-child")).toBe(false);
+    expect(applyPendingDraft(ctx, "session-source")).toBe(false);
   });
 
   it("reports no fallback when the binding is not ready", () => {
     const { ctx } = harness(false);
-    rememberDraft("session-child", "兜底文本");
-    expect(applyPendingDraft(ctx, "session-child")).toBe(false);
-    resetDrafts();
-  });
-  it("hides the undone row through the session catalog", async () => {
-    const { ctx, handleSessionRemoved } = harness();
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockResolvedValueOnce(json({ available: true, prompt: "x" }))
-        .mockResolvedValueOnce(json({ childSessionId: "session-child", prompt: "x" })),
-    );
-    render(createElement(UndoButton, { sessionId: "session-source", ctx }));
-    const button = await screen.findByRole("button", { name: "撤回上一轮" });
-    await waitFor(() => expect(button).toHaveProperty("disabled", false));
-    fireEvent.click(button);
-    fireEvent.click(within(screen.getByRole("dialog")).getByText("撤回"));
-    // 宿主会把存活会话继续列出来，客户端按「已销毁」的同一路径把它摘掉。
-    await waitFor(() => expect(handleSessionRemoved).toHaveBeenCalledWith("session-source"));
-    resetDrafts();
-    clearTombstones();
-  });
-
-  it("asks the session catalog to refresh so the removed row disappears", async () => {
-    const { ctx, refresh } = harness();
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockResolvedValueOnce(json({ available: true, prompt: "x" }))
-        .mockResolvedValueOnce(json({ childSessionId: "session-child", prompt: "x" })),
-    );
-    render(createElement(UndoButton, { sessionId: "session-source", ctx }));
-    const button = await screen.findByRole("button", { name: "撤回上一轮" });
-    await waitFor(() => expect(button).toHaveProperty("disabled", false));
-    fireEvent.click(button);
-    fireEvent.click(within(screen.getByRole("dialog")).getByText("撤回"));
-    // 宿主删掉原会话日志后不会主动推送列表变更，客户端要主动重读一次目录。
-    await waitFor(() => expect(refresh).toHaveBeenCalled(), { timeout: 2500 });
+    rememberDraft("session-source", "兜底文本");
+    expect(applyPendingDraft(ctx, "session-source")).toBe(false);
     resetDrafts();
   });
 
   it("does nothing when the confirmation is cancelled", async () => {
-    const { ctx, openSession } = harness();
+    const { ctx } = harness();
     const fetchMock = vi.fn(async () => json({ available: true, prompt: "x" }));
     vi.stubGlobal("fetch", fetchMock);
     render(createElement(UndoButton, { sessionId: "session-source", ctx }));
@@ -155,7 +130,8 @@ describe("UndoButton", () => {
     await waitFor(() => expect(button).toHaveProperty("disabled", false));
     fireEvent.click(button);
     fireEvent.click(screen.getByText("取消"));
-    expect(openSession).not.toHaveBeenCalled();
+    expect(recalledRanges()).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("disables itself when the session has no previous turn", async () => {
@@ -168,6 +144,17 @@ describe("UndoButton", () => {
     const button = await screen.findByRole("button", { name: "撤回上一轮" });
     await waitFor(() => expect(button).toHaveProperty("disabled", true));
     expect(button.getAttribute("title")).toBe("没有可回退的上一轮");
+  });
+
+  it("explains that a running turn must stop first", async () => {
+    const { ctx } = harness();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json({ available: false, reason: "agent-busy" })),
+    );
+    render(createElement(UndoButton, { sessionId: "session-1", ctx }));
+    const button = await screen.findByRole("button", { name: "撤回上一轮" });
+    await waitFor(() => expect(button.getAttribute("title")).toBe("这一轮还在跑，先停下再撤回"));
   });
 
   it("stays hidden while the undo tool is disabled", async () => {

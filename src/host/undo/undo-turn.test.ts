@@ -1,276 +1,360 @@
-import { join } from "node:path";
 import { describe, expect, it, vi } from "vite-plus/test";
-import type {
-  HostSession,
-  HostSessionController,
-  HostSessionEvent,
-  HostSessionStore,
-  HostWorkspaceRecord,
-  HostWorkspaceRegistry,
-} from "../services.js";
-import { ToolkitStateStore, type ToolkitStateIo } from "../toolkit-state.js";
-import type { SessionLogIo } from "./purge.js";
-import { inspectUndo, UndoUnavailableError, undoTurn, type UndoDeps } from "./undo-turn.js";
+import type { UndoSessionEvent } from "./turn-boundary.js";
+import {
+  inspectUndo,
+  UndoUnavailableError,
+  undoTurn,
+  type UndoDeps,
+  type UndoQueueController,
+  type UndoSession,
+} from "./undo-turn.js";
 
-const memoryStateIo = (): ToolkitStateIo => {
-  let text: string | undefined;
+/** 表面事件类型：真实日志里这些事件都带 `surfaceOp`。 */
+const SURFACE_TYPES = new Set([
+  "system/message",
+  "developer/message",
+  "user/message",
+  "assistant/message",
+  "tool/result",
+]);
+
+const events = (spec: readonly [string, unknown?][]): UndoSessionEvent[] =>
+  spec.map(([type, data], seq) => ({
+    type,
+    seq,
+    ...(data === undefined ? {} : { data }),
+    ...(SURFACE_TYPES.has(type) ? { surfaceOp: "append" } : {}),
+  }));
+
+const userMessage = (text: string, id?: string): unknown => ({
+  ...(id === undefined ? {} : { id }),
+  role: "user",
+  content: [{ type: "text", text }],
+  source: { kind: "user" },
+});
+
+const assistantMessage = (text: string): unknown => ({
+  message: { role: "assistant", content: [{ type: "text", text }] },
+});
+
+/** 两轮会话：最后一条是第二轮的用户消息（seq 4）。 */
+const twoTurns = (): UndoSessionEvent[] =>
+  events([
+    ["turn/start", { turn: 1 }],
+    ["user/message", userMessage("一", "m1")],
+    ["turn/end", { turn: 1 }],
+    ["turn/start", { turn: 2 }],
+    ["user/message", userMessage("二", "m2")],
+  ]);
+
+/** 事件序列上的表面折叠：只够撤回用（追加进尾部，替换换掉整段）。 */
+const foldNodes = (log: readonly UndoSessionEvent[]): number[] => {
+  const nodes: number[] = [];
+  for (const event of log) {
+    const op = event.surfaceOp;
+    if (op === "append") {
+      nodes.push(event.seq);
+      continue;
+    }
+    if (typeof op !== "object" || op === null) continue;
+    const { startSeq, endSeq } = op as { startSeq: number; endSeq: number };
+    const start = nodes.indexOf(startSeq);
+    const end = nodes.indexOf(endSeq);
+    if (start < 0 || end < start) continue;
+    nodes.splice(start, end - start + 1, event.seq);
+  }
+  return nodes;
+};
+
+interface Appended {
+  readonly type: string;
+  readonly data: Record<string, unknown>;
+  readonly opts: { readonly surfaceOp?: unknown; readonly sourceEventSeqs?: readonly number[] };
+}
+
+/** 会话替身：`append` 真写进日志，好让断言看到落地的墓碑。 */
+const makeSession = (
+  log: readonly UndoSessionEvent[],
+  surface?: readonly number[],
+): UndoSession & { appended: Appended[]; log: UndoSessionEvent[] } => {
+  const mutable = [...log];
+  const appended: Appended[] = [];
   return {
-    async read() {
-      return text;
+    log: mutable,
+    appended,
+    get seq() {
+      return mutable.length;
     },
-    async write(next) {
-      text = next;
+    surface: { nodes: [...(surface ?? foldNodes(mutable))] },
+    snapshotEvents: () => mutable,
+    append(type: string, data: unknown, opts?: unknown) {
+      const seq = mutable.length;
+      const written = (opts ?? {}) as Appended["opts"];
+      appended.push({ type, data: data as Record<string, unknown>, opts: written });
+      mutable.push({ type, seq, data, surfaceOp: written.surfaceOp });
+      return { seq };
     },
   };
 };
 
-const log = (): HostSessionEvent[] => [
-  { type: "turn/start", seq: 0, data: { turn: 1 } },
-  {
-    type: "user/message",
-    seq: 1,
-    data: { content: [{ type: "text", text: "一" }], source: { kind: "user" } },
-  },
-  { type: "turn/end", seq: 2, data: { turn: 1 } },
-  { type: "turn/start", seq: 3, data: { turn: 2 } },
-  {
-    type: "user/message",
-    seq: 4,
-    data: { content: [{ type: "text", text: "二" }], source: { kind: "user" } },
-  },
-];
-
 interface SetupOptions {
+  readonly log?: readonly UndoSessionEvent[];
+  readonly surface?: readonly number[];
+  /** 会话是否存活；false 时 `get` 始终返回 undefined。 */
   readonly live?: boolean;
-  readonly archiveFails?: boolean;
-  readonly placeFails?: boolean;
-  readonly retainLogs?: boolean;
-  readonly pinned?: readonly string[];
+  /** agent 运行状态；`running` 时撤回应当拒绝。 */
+  readonly status?: string;
+  /** 宿主是否暴露 agents 服务。 */
+  readonly agents?: false;
+  /** 宿主是否暴露队列能力。 */
+  readonly queue?: false;
+  /** 队列里的待发输入 id。 */
+  readonly queued?: readonly string[];
+  /** 让 `state()` 抛错。 */
+  readonly queueReadFails?: boolean;
+  /** 让第 n 条移除抛错（1 起）。 */
+  readonly queueRemoveFailsAt?: number;
+  /** 宿主不提供 `sessions.flush`。 */
+  readonly flush?: false;
+  /** 让 `flush` 抛错。 */
+  readonly flushFails?: boolean;
 }
 
-const setup = async (options: SetupOptions = {}) => {
-  let liveCalls = 0;
-  const session: HostSession = { snapshotEvents: () => log() };
-  const sessions: HostSessionStore = {
-    get: () => {
-      liveCalls += 1;
-      // `live` 缺省时始终存活；显式 false 时第一次查询后模拟「撤销后会话已被释放」。
-      if (options.live !== false) return session;
-      return liveCalls === 1 ? session : undefined;
-    },
-  };
-  const fork = vi.fn(async () => ({ sessionId: "session-child" }));
-  const controller: HostSessionController = { fork };
-  const inserted: { sessionId: string; before: string | undefined }[] = [];
-  const insertSessionBefore = options.placeFails
+const setup = (options: SetupOptions = {}) => {
+  const session = makeSession(options.log ?? twoTurns(), options.surface);
+  const flush = options.flushFails
     ? vi.fn(async () => {
-        throw new Error("insert failed");
+        throw new Error("flush failed");
       })
-    : vi.fn(async (sessionId: string, before: string | undefined) => {
-        inserted.push({ sessionId, before });
-      });
-  const detachSession = vi.fn(async () => {});
-  const record: HostWorkspaceRecord = {
-    sessionIds: ["session-source", "session-after"],
-    insertSessionBefore,
-    detachSession,
+    : vi.fn(async () => true);
+  const sessions: NonNullable<UndoDeps["sessions"]> = {
+    get: () => (options.live === false ? undefined : session),
+    ...(options.flush === false ? {} : { flush }),
   };
-  const pinned = [...(options.pinned ?? [])];
-  const archiveSession = options.archiveFails
-    ? vi.fn(async () => {
-        throw new Error("archive failed");
-      })
-    : vi.fn(async (sessionId: string) => {
-        // 与宿主一致：归档会顺手把该会话从置顶集合里摘掉。
-        const index = pinned.indexOf(sessionId);
-        if (index >= 0) pinned.splice(index, 1);
-      });
-  const pinSession = vi.fn(async (sessionId: string) => {
-    if (!pinned.includes(sessionId)) pinned.unshift(sessionId);
+  const removed: { readonly itemId: string; readonly action: unknown }[] = [];
+  const queueRead = vi.fn(async () => ({ queue: (options.queued ?? []).map((id) => ({ id })) }));
+  const remove = vi.fn(async (request: { readonly itemId: string; readonly action: unknown }) => {
+    removed.push({ itemId: request.itemId, action: request.action });
+    if (options.queueRemoveFailsAt === removed.length) throw new Error("remove failed");
+    return { accepted: true };
   });
-  const unpinSession = vi.fn(async (sessionId: string) => {
-    const index = pinned.indexOf(sessionId);
-    if (index >= 0) pinned.splice(index, 1);
-  });
-  const unarchived: string[] = [];
-  const unarchiveSession = vi.fn(async (sessionId: string) => {
-    unarchived.push(sessionId);
-  });
-  const workspaces: HostWorkspaceRegistry = {
-    list: () => [record],
-    archivedSessionIds: [],
-    get pinnedSessionIds() {
-      return [...pinned];
-    },
-    archiveSession,
-    pinSession,
-    unpinSession,
-    unarchiveSession,
-  };
-  const store = new ToolkitStateStore(memoryStateIo());
-  await store.load();
-  const removed: string[] = [];
-  const logIo: SessionLogIo = {
-    async listDirs() {
-      return ["workspace-a"];
-    },
-    async removeDir(path) {
-      if (options.retainLogs === true) throw new Error("locked");
-      removed.push(path);
-      return "removed" as const;
-    },
+  const controller: UndoQueueController = {
+    state: options.queueReadFails
+      ? vi.fn(async () => {
+          throw new Error("state failed");
+        })
+      : queueRead,
+    updateQueue: remove,
   };
   const warn = vi.fn();
   const deps: UndoDeps = {
     sessions,
-    controller,
-    workspaces,
-    store,
-    sessionsRoot: "/sessions",
     logger: { warn },
-    settle: async () => {},
-    logIo,
+    ...(options.queue === false ? {} : { controller }),
+    ...(options.agents === false
+      ? {}
+      : {
+          agents: {
+            get: () => (options.status === undefined ? {} : { status: options.status }),
+          },
+        }),
   };
-  return {
-    deps,
-    detachSession,
-    fork,
-    archiveSession,
-    insertSessionBefore,
-    inserted,
-    pinSession,
-    unpinSession,
-    unarchiveSession,
-    unarchived,
-    pinned,
-    store,
-    removed,
-    warn,
-  };
+  return { deps, session, sessions, flush, remove, queueRead, removed, warn };
 };
 
 describe("inspectUndo", () => {
-  it("reports the prompt of the last turn", async () => {
-    const { deps } = await setup();
+  it("reports the prompt of the last turn", () => {
+    const { deps } = setup();
     expect(inspectUndo(deps, "session-source")).toEqual({ available: true, prompt: "二" });
   });
 
-  it("reports a session that is not live", async () => {
-    const { deps } = await setup();
-    const missing: HostSessionStore = { get: () => undefined };
-    expect(inspectUndo({ ...deps, sessions: missing }, "x")).toEqual({
+  it("reports a session that is not live", () => {
+    const { deps } = setup({ live: false });
+    expect(inspectUndo(deps, "session-gone")).toEqual({
       available: false,
       reason: "session-not-live",
     });
   });
 
-  it("reports a session with a single turn", async () => {
-    const { deps } = await setup();
-    const single: HostSessionStore = {
-      get: () => ({ snapshotEvents: () => log().slice(0, 3) }),
-    };
-    expect(inspectUndo({ ...deps, sessions: single }, "x")).toEqual({
+  it("reports a session whose agent is running", () => {
+    const { deps } = setup({ status: "running" });
+    expect(inspectUndo(deps, "session-1")).toEqual({ available: false, reason: "agent-busy" });
+  });
+
+  it("reports a session with a single turn", () => {
+    const { deps } = setup({ log: twoTurns().slice(0, 3) });
+    expect(inspectUndo(deps, "session-1")).toEqual({
       available: false,
       reason: "no-previous-turn",
+    });
+  });
+
+  it("reports a session that exposes no writable surface", () => {
+    const { deps } = setup();
+    const readOnly = { snapshotEvents: () => twoTurns() };
+    expect(inspectUndo({ ...deps, sessions: { get: () => readOnly } }, "x")).toEqual({
+      available: false,
+      reason: "unsupported-host",
     });
   });
 });
 
 describe("undoTurn", () => {
-  it("forks at the previous turn end, archives, keeps the slot and queues the delete", async () => {
-    const { deps, fork, archiveSession, insertSessionBefore, store } = await setup();
+  it("appends one tombstone and returns the recall boundary", async () => {
+    const { deps, session } = setup();
     const result = await undoTurn(deps, "session-source");
-    expect(result).toEqual({ childSessionId: "session-child", prompt: "二" });
-    expect(fork).toHaveBeenCalledWith({ sessionId: "session-source", atSeq: 2 });
-    expect(archiveSession).toHaveBeenCalledWith("session-source", { stopActivity: true });
-    // 记账位置：插到原会话原来的后继之前（而不是被 fork 默认前插）。
-    expect(insertSessionBefore).toHaveBeenCalledWith("session-child", "session-after");
-    // 第一次查询仍返回存活会话，因此删除推迟到下次启动。
-    expect(store.snapshot().pendingDeletes).toEqual(["session-source"]);
-  });
-
-  it("takes over the pin slot of the source session", async () => {
-    const { deps, pinned, pinSession, unpinSession } = await setup({
-      pinned: ["session-other", "session-source", "session-third"],
+    // 会话 id 不变：返回值里只剩切点、墓碑 seq 与原文。
+    expect(result).toEqual({ boundary: 4, seq: 5, prompt: "二" });
+    expect(session.appended).toHaveLength(1);
+    const [tombstone] = session.appended;
+    expect(tombstone?.type).toBe("system/message");
+    expect(tombstone?.data).toMatchObject({
+      turn: 2,
+      step: 1,
+      recall: { boundary: 4, end: 4 },
+      message: {
+        id: "recall-5-4",
+        role: "system",
+        source: { kind: "system-prompt" },
+        content: [],
+      },
     });
-    await undoTurn(deps, "session-source");
-    expect(unpinSession).toHaveBeenCalled();
-    // 子会话顶替原会话在置顶集合里的序号。
-    expect(pinned).toEqual(["session-other", "session-child", "session-third"]);
-    expect(pinSession).toHaveBeenCalledWith("session-child");
-  });
-
-  it("leaves pinning alone when the source was not pinned", async () => {
-    const { deps, pinned, pinSession } = await setup({ pinned: ["session-other"] });
-    await undoTurn(deps, "session-source");
-    expect(pinSession).not.toHaveBeenCalled();
-    expect(pinned).toEqual(["session-other"]);
-  });
-
-  it("完全删除：摘记账、删日志、撤销归档，不留占位", async () => {
-    const { deps, removed, store, detachSession, unarchiveSession, unarchived } = await setup({
-      live: false,
+    expect(tombstone?.opts).toEqual({
+      surfaceOp: { op: "replace", startSeq: 4, endSeq: 4 },
+      sourceEventSeqs: [4],
     });
-    await undoTurn(deps, "session-source");
-    expect(detachSession).toHaveBeenCalledWith("session-source");
-    expect(removed).toEqual([join("/sessions", "workspace-a", "session-source")]);
-    expect(unarchiveSession).toHaveBeenCalledWith("session-source");
-    expect(unarchived).toEqual(["session-source"]);
-    // 启动复核清单会留一条 id，启动时再删一次（幂等）并清空。
-    expect(store.snapshot().pendingDeletes).toEqual(["session-source"]);
-    expect(store.snapshot().pendingUnarchives).toEqual([]);
   });
 
-  it("存活会话也当场删日志并撤销归档（只留一条启动复核）", async () => {
-    const { deps, store, detachSession, unarchiveSession, removed } = await setup();
-    await undoTurn(deps, "session-source");
-    expect(detachSession).toHaveBeenCalledWith("session-source");
-    expect(removed).toEqual([join("/sessions", "workspace-a", "session-source")]);
-    expect(unarchiveSession).toHaveBeenCalledWith("session-source");
-    // 启动复核：即使当场删成功也排一条，防止存活实例把日志写回来。
-    expect(store.snapshot().pendingDeletes).toEqual(["session-source"]);
-  });
-
-  it("keeps the deletion queued when the log directory is locked", async () => {
-    const { deps, store } = await setup({ live: false, retainLogs: true });
-    await undoTurn(deps, "session-source");
-    expect(store.snapshot().pendingDeletes).toEqual(["session-source"]);
-  });
-
-  it("does not queue a delete when archiving fails", async () => {
-    const { deps, store, insertSessionBefore, archiveSession } = await setup({
-      archiveFails: true,
-    });
+  it("shadows every surface node from the boundary to the tail", async () => {
+    const log = events([
+      ["turn/start", { turn: 1 }],
+      ["user/message", userMessage("一", "m1")],
+      ["assistant/message", assistantMessage("一答")],
+      ["turn/end", { turn: 1 }],
+      ["turn/start", { turn: 2 }],
+      ["user/message", userMessage("二", "m2")],
+      ["assistant/message", assistantMessage("二答")],
+      ["tool/result", { message: { id: "t1", content: [] } }],
+    ]);
+    const { deps, session } = setup({ log });
     const result = await undoTurn(deps, "session-source");
-    expect(result.childSessionId).toBe("session-child");
-    expect(archiveSession).toHaveBeenCalled();
-    expect(insertSessionBefore).not.toHaveBeenCalled();
-    expect(store.snapshot().pendingDeletes).toEqual([]);
-  });
-
-  it("tolerates a placement failure", async () => {
-    const { deps, warn } = await setup({ placeFails: true });
-    await expect(undoTurn(deps, "session-source")).resolves.toMatchObject({
-      childSessionId: "session-child",
+    expect(result.boundary).toBe(5);
+    expect(session.appended[0]?.opts).toEqual({
+      surfaceOp: { op: "replace", startSeq: 5, endSeq: 7 },
+      sourceEventSeqs: [5, 6, 7],
     });
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('placing "session-child" failed'));
+    expect(session.appended[0]?.data["recall"]).toEqual({ boundary: 5, end: 7 });
   });
 
-  it("works without a workspace registry", async () => {
-    const { deps, store } = await setup();
-    const result = await undoTurn({ ...deps, workspaces: undefined }, "session-source");
-    expect(result.childSessionId).toBe("session-child");
-    expect(store.snapshot().pendingDeletes).toEqual([]);
+  it("flushes the session once after writing the tombstone", async () => {
+    const { deps, flush, session } = setup();
+    await undoTurn(deps, "session-source");
+    expect(flush).toHaveBeenCalledWith(session);
   });
 
-  it("throws a reason when the turn cannot be undone", async () => {
-    const { deps } = await setup();
-    const missing: HostSessionStore = { get: () => undefined };
-    await expect(undoTurn({ ...deps, sessions: missing }, "x")).rejects.toBeInstanceOf(
-      UndoUnavailableError,
-    );
-    await expect(undoTurn({ ...deps, sessions: missing }, "x")).rejects.toMatchObject({
-      reason: "session-not-live",
+  it("keeps the recall when the store exposes no flush", async () => {
+    const { deps, warn, session } = setup({ flush: false });
+    await expect(undoTurn(deps, "session-source")).resolves.toMatchObject({ boundary: 4 });
+    expect(session.appended).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("no flush"));
+  });
+
+  it("keeps the recall when the flush fails", async () => {
+    const { deps, warn } = setup({ flushFails: true });
+    await expect(undoTurn(deps, "session-source")).resolves.toMatchObject({ boundary: 4 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("flushing the recall mark failed"));
+  });
+
+  it("clears queued input one item at a time", async () => {
+    const { deps, removed, queueRead } = setup({ queued: ["q1", "q2"] });
+    await undoTurn(deps, "session-source");
+    expect(queueRead).toHaveBeenCalledTimes(1);
+    expect(removed).toEqual([
+      { itemId: "q1", action: { kind: "remove" } },
+      { itemId: "q2", action: { kind: "remove" } },
+    ]);
+  });
+
+  it("keeps going when the host exposes no queue", async () => {
+    const { deps, warn } = setup({ queue: false });
+    await expect(undoTurn(deps, "session-source")).resolves.toMatchObject({ prompt: "二" });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("no session queue"));
+  });
+
+  it("keeps going when reading the queue fails", async () => {
+    const { deps, warn, remove } = setup({ queueReadFails: true });
+    await expect(undoTurn(deps, "session-source")).resolves.toMatchObject({ boundary: 4 });
+    expect(remove).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("reading the queue"));
+  });
+
+  it("keeps going when one queued item cannot be removed", async () => {
+    const { deps, removed, warn } = setup({ queued: ["q1", "q2"], queueRemoveFailsAt: 1 });
+    await expect(undoTurn(deps, "session-source")).resolves.toMatchObject({ boundary: 4 });
+    // 逐条尝试：第一条失败不影响第二条。
+    expect(removed.map((item) => item.itemId)).toEqual(["q1", "q2"]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('removing queued input "q1"'));
+  });
+
+  it("throws a reason when the session is not live", async () => {
+    const { deps } = setup({ live: false });
+    const failure = undoTurn(deps, "session-gone");
+    await expect(failure).rejects.toBeInstanceOf(UndoUnavailableError);
+    await expect(failure).rejects.toMatchObject({ reason: "session-not-live" });
+  });
+
+  it("throws a reason when there is no earlier turn", async () => {
+    const { deps } = setup({ log: twoTurns().slice(0, 3) });
+    await expect(undoTurn(deps, "session-1")).rejects.toMatchObject({ reason: "no-previous-turn" });
+  });
+
+  it("refuses to rewrite a surface while the agent is running", async () => {
+    const { deps, session, queueRead } = setup({ status: "running" });
+    await expect(undoTurn(deps, "session-1")).rejects.toMatchObject({ reason: "agent-busy" });
+    expect(session.appended).toHaveLength(0);
+    expect(queueRead).not.toHaveBeenCalled();
+  });
+
+  it("still undoes when the host exposes no agents service", async () => {
+    const { deps, session } = setup({ agents: false });
+    await expect(undoTurn(deps, "session-source")).resolves.toMatchObject({ boundary: 4 });
+    expect(session.appended).toHaveLength(1);
+  });
+
+  it("rejects a boundary that already left the surface", async () => {
+    // 表面只剩上一轮：第二轮的用户消息早先被替换掉了。
+    const { deps, session } = setup({ surface: [1, 2] });
+    await expect(undoTurn(deps, "session-source")).rejects.toMatchObject({
+      reason: "no-previous-turn",
+    });
+    expect(session.appended).toHaveLength(0);
+  });
+
+  it("does not touch the queue when the turn cannot be undone", async () => {
+    const { deps, queueRead } = setup({ log: twoTurns().slice(0, 3) });
+    await expect(undoTurn(deps, "session-1")).rejects.toBeInstanceOf(UndoUnavailableError);
+    expect(queueRead).not.toHaveBeenCalled();
+  });
+
+  it("accepts an anchor naming the last turn's user message", async () => {
+    const { deps } = setup();
+    await expect(
+      undoTurn(deps, "session-source", { messageId: "m2", boundary: 4 }),
+    ).resolves.toMatchObject({ boundary: 4 });
+  });
+
+  it("rejects an anchor that names another boundary", async () => {
+    const { deps, session } = setup();
+    await expect(undoTurn(deps, "session-source", { boundary: 1 })).rejects.toMatchObject({
+      reason: "no-previous-turn",
+    });
+    expect(session.appended).toHaveLength(0);
+  });
+
+  it("rejects an anchor naming another message", async () => {
+    const { deps } = setup();
+    await expect(undoTurn(deps, "session-source", { messageId: "m1" })).rejects.toMatchObject({
+      reason: "no-previous-turn",
     });
   });
 });

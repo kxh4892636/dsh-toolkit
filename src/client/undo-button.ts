@@ -11,12 +11,7 @@ import { clientService, hasMethod, type ClientContext } from "./contract.js";
 import { ConfirmModal } from "./confirm-modal.js";
 import { fetchUndoAvailability, HostApiError, runUndoTurn } from "./host-api.js";
 import { dropDraft, peekDraft, rememberDraft, takeDraft } from "./draft-restore.js";
-import {
-  guardTombstones,
-  hideSessionRow,
-  rememberTombstone,
-  type SessionCatalogLike,
-} from "./tombstones.js";
+import { hideRecalledRange } from "./recall-hide.js";
 import { toolkitClientState } from "./state.js";
 import { ensureToolkitStyles } from "./stylesheet.js";
 
@@ -26,7 +21,7 @@ interface UndoButtonProps {
   readonly ctx: ClientContext;
   /** 会话快照选择器（`conversation.input.right` 的标准 props），用于感知轮次起止。 */
   readonly useSession?: <S>(selector: (snapshot: SessionSnapshotLike) => S) => S;
-  /** composer 的标准动作面；撤回后用它把原文写进新会话的输入框。 */
+  /** composer 的标准动作面；撤回后用它把原文写回同一个会话的输入框。 */
   readonly inputActions?: InputActionsLike;
 }
 
@@ -63,7 +58,8 @@ const UndoIcon: FC = () => {
 
 /**
  * composer 工具栏的「撤回」按钮：位于模型选择左侧（`conversation.input.right`）。
- * 只负责确认与发起，执行在宿主：回到上一轮结束的状态、取回本轮输入、删除原会话。
+ * 只负责确认与发起，执行在宿主：就地追加一条墓碑、把本轮输入还给客户端。
+ * 行从对话里消失是客户端的事（见 `recall-hide.ts`），会话 id 不变、不换会话。
  */
 export const UndoButton: FC<UndoButtonProps> = (props) => {
   const tools = useSyncExternalStore(
@@ -121,11 +117,11 @@ export const UndoButton: FC<UndoButtonProps> = (props) => {
     setBusy(true);
     setError(undefined);
     runUndoTurn(props.sessionId)
-      .then((result) => openUndone(props.ctx, result, props.sessionId))
+      .then((result) => applyUndone(props.ctx, props.sessionId, result, props.inputActions))
       .then(() => setOpen(false))
       .catch((reason: unknown) => setError(describe(reason)))
       .finally(() => setBusy(false));
-  }, [props.ctx, props.sessionId]);
+  }, [props.ctx, props.inputActions, props.sessionId]);
 
   if (!enabled) return null;
   ensureToolkitStyles();
@@ -153,7 +149,7 @@ export const UndoButton: FC<UndoButtonProps> = (props) => {
       open,
       title: "撤回这一轮会话？",
       message:
-        "会话会回到上一轮结束的状态，本轮的用户输入回到输入框，原会话被删除。已执行的文件改动与命令不会回滚。",
+        "本轮消息会从对话里移除，用户输入回到输入框，可修改后重新发送。已执行的文件改动与命令不会回滚。",
       ...(availability?.prompt === undefined ? {} : { preview: availability.prompt }),
       confirmLabel: busy ? "正在撤回…" : "撤回",
       cancelLabel: "取消",
@@ -170,77 +166,44 @@ export const UndoButton: FC<UndoButtonProps> = (props) => {
 };
 
 /**
- * 打开撤销得到的新会话，并把被撤销那一轮的用户原文放回输入框。
+ * 撤回成功后的两件事，顺序即优先级：
+ * 1. **本地先藏**：用响应里的 `{boundary, seq}` 立即记区间并请求重装配，
+ *    行马上消失，不必等墓碑事件从会话流里回来（乐观更新）。
+ * 2. **原文回填**：走 composer 的 `setDraft`，输入框立刻拿到原文；
+ *    拿不到 composer 时登记为待回填，由本按钮或服务面兜底落地。
  *
- * 关键点：`openSession` 只是同步地换掉主视图引用，composer 在此之后才挂载；
- * 这时按 binding 去写草稿常常打在**还没挂载**的 shell 上而被随后的挂载覆盖。
- * 因此草稿先登记为「待回填」，由新会话自己的撤回按钮（与 composer 同时挂载）用
- * `inputActions.setDraft` 落地；这里只保一条 1.5s 后的服务面兜底。
+ * 会话 id 不变、不换会话、不摘会话行：就地撤回只追加一条墓碑。
+ * @param ctx - 客户端根上下文。
+ * @param sessionId - 被撤回的会话（回填草稿的键）。
+ * @param result - 宿主返回的撤回切点与原文。
+ * @param inputActions - composer 的标准动作面。
  */
-const openUndone = async (
+const applyUndone = (
   ctx: ClientContext,
+  sessionId: string,
   result: UndoTurnResponse,
-  sourceId: string,
-): Promise<void> => {
+  inputActions: UndoButtonProps["inputActions"],
+): void => {
+  hideRecalledRange(result.boundary, result.seq);
   if (result.prompt === "") return;
-  rememberDraft(result.childSessionId, result.prompt);
-  const workspace = clientService<{ openSession(id: string): unknown }>(ctx, "uiWorkspace");
-  if (workspace !== undefined && typeof workspace.openSession === "function") {
-    try {
-      await workspace.openSession(result.childSessionId);
-    } catch {
-      // 打开失败不影响撤回记账：用户可在会话目录里手动打开。
-    }
+  const setDraft = inputActions?.setDraft;
+  if (typeof setDraft === "function") {
+    setDraft(result.prompt);
+    inputActions?.persistDraft?.();
+    return;
   }
-  hideUndoneRow(ctx, sourceId);
-  scheduleCatalogRefresh(ctx);
-  scheduleFallback(ctx, result);
-};
-
-/**
- * 宿主删掉原会话的日志后不会主动推送列表变更，浏览器里那条行会留到下次刷新手动刷新。
- * 这里在删除落地后主动让会话目录重读一次，行才会立刻消失。
- * @param ctx - 客户端根上下文。
- */
-const scheduleCatalogRefresh = (ctx: ClientContext): void => {
-  const refresh = clientService<{ refresh?: () => unknown }>(ctx, "sessions")?.refresh;
-  if (typeof refresh !== "function") return;
-  for (const delay of CATALOG_REFRESH_DELAYS_MS) {
-    setTimeout(() => {
-      try {
-        refresh.call(clientService(ctx, "sessions"));
-      } catch {
-        // 连接中断等情况下刷新失败不影响撤回结果。
-      }
-    }, delay);
-  }
-};
-
-/** 两次刷新：宿主删除窗口 150ms + 落盘，取 600ms 与 1800ms 覆盖慢盘。 */
-const CATALOG_REFRESH_DELAYS_MS = [600, 1800];
-
-/**
- * 把被撤回的原会话那一行从会话目录里摘掉。
- *
- * 宿主 `session/list` 会合并存活会话，所以删掉日志后那一行仍会被列出来（重启才消失）。
- * 这里走宿主「会话已销毁」时用的同一条路径（`sessions.handleSessionRemoved`）移除该行，
- * 并挂一个持续守卫：目录每次刷新若又把它列回来，就再移除一次。
- * @param ctx - 客户端根上下文。
- * @param sessionId - 被撤回的原会话。
- */
-const hideUndoneRow = (ctx: ClientContext, sessionId: string): void => {
-  rememberTombstone(sessionId);
-  const catalog = clientService<SessionCatalogLike>(ctx, "sessions");
-  hideSessionRow(catalog, sessionId);
-  guardTombstones(catalog);
+  rememberDraft(sessionId, result.prompt);
+  scheduleFallback(ctx, sessionId);
 };
 
 /**
  * 兜底：组件路径没来得及消费时，等服务面 binding 稳定后再写一次。
+ * @param ctx - 客户端根上下文。
+ * @param sessionId - 待回填的会话。
  */
-const scheduleFallback = (ctx: ClientContext, result: UndoTurnResponse): void => {
+const scheduleFallback = (ctx: ClientContext, sessionId: string): void => {
   setTimeout(() => {
-    applyPendingDraft(ctx, result.childSessionId);
+    applyPendingDraft(ctx, sessionId);
   }, FALLBACK_DELAY_MS);
 };
 
@@ -276,7 +239,7 @@ export const applyPendingDraft = (ctx: ClientContext, sessionId: string): boolea
 const FALLBACK_DELAY_MS = 1500;
 
 /**
- * 由新会话的撤回按钮取走待回填草稿并写进输入框。
+ * 挂载时取走待回填草稿并写进输入框（兜底路径登记的草稿在这里落地）。
  * @param inputActions - composer 的标准动作面（`setDraft` 是宿主公开的写草稿入口）。
  * @param sessionId - 当前会话。
  */
@@ -314,6 +277,8 @@ const hintOf = (availability: UndoAvailability | undefined): string => {
       return "没有可回退的上一轮";
     case "session-not-live":
       return "会话尚未在宿主中打开";
+    case "agent-busy":
+      return "这一轮还在跑，先停下再撤回";
     case "unsupported-host":
       return "当前宿主不支持撤回";
     case "tool-disabled":

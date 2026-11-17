@@ -30,10 +30,24 @@ export interface UndoAvailability {
   readonly prompt?: string;
 }
 
-/** `POST /api/toolkit/undo-turn` 的响应。 */
+/** `POST /api/toolkit/undo-turn` 的响应：撤回就地完成，会话 id 不变。 */
 export interface UndoTurnResponse {
-  readonly childSessionId: string;
+  /** 撤回切点：被撤回那条消息的 seq，也是墓碑 replace 区间的起点。 */
+  readonly boundary: number;
+  /** 墓碑事件自己的 seq（表面最后一个节点）。 */
+  readonly seq: number;
+  /** 被撤回那轮的用户原文，供客户端回填草稿。 */
   readonly prompt: string;
+}
+
+/**
+ * 就地撤回墓碑事件（`system/message`）的 `data.recall` 形状。
+ *
+ * 客户端半据此把 `boundary..end` 之间的行隐藏；宿主半写入时两个数都来自当前表面。
+ */
+export interface UndoRecallMark {
+  readonly boundary: number;
+  readonly end: number;
 }
 
 /** 宿主路由的错误体；客户端据 `error` 选择本地化文案。 */
@@ -45,7 +59,7 @@ export interface ToolkitErrorBody {
 /** 宿主工具目录路由（连接服务已鉴权，客户端用同源相对地址调用）。 */
 export const TOOLKIT_STATE_PATH = "/api/toolkit/state";
 
-/** 撤回工具路由：GET 探测可用性，POST 执行。 */
+/** 撤回工具路由：GET 探测可用性，POST 执行（就地墓碑，不换会话）。 */
 export const TOOLKIT_UNDO_PATH = "/api/toolkit/undo-turn";
 
 /** 已撤回（应隐藏）的会话 id：客户端启动时据此把残留行摘掉。 */

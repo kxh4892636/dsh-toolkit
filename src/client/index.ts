@@ -4,6 +4,7 @@ import { fetchHiddenSessions, fetchToolkitState } from "./host-api.js";
 import { NotesDock } from "./notes-dock.js";
 import { ToolkitPanel } from "./panel.js";
 import { ToolkitPanelIcon } from "./panel-icon.js";
+import { installRecallHiding } from "./recall-hide.js";
 import { toolkitClientState } from "./state.js";
 import {
   guardTombstones,
@@ -14,7 +15,7 @@ import {
 } from "./tombstones.js";
 import { UndoButton } from "./undo-button.js";
 
-/** 客户端半只硬依赖 slot 服务；其余服务（uiWorkspace/conversation/sessions）按需懒取。 */
+/** 客户端半只硬依赖 slot 服务；其余服务（uiConversation/conversation/sessions）按需懒取。 */
 export const inject = ["slots"];
 
 /**
@@ -57,6 +58,12 @@ export const apply = (ctx: ClientContext): void => {
       NotesDock,
     ),
   );
+  // 与座位注册同一处安装：撤回过的行必须真的从对话里消失，而不是留在窗口里。
+  // 拿不到 uiConversation 时整层降级（只回填草稿、不隐藏），不打断其余注册。
+  ctx.effect(() => {
+    const hiding = installRecallHiding(ctx);
+    return () => hiding?.dispose();
+  }, "toolkit: recall hiding");
   void fetchToolkitState()
     .then((tools) => toolkitClientState.publish(tools))
     .catch(() => {

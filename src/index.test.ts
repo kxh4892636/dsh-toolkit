@@ -343,31 +343,37 @@ describe("toolkit plugin entry", () => {
     expect(await response?.json()).toEqual({ available: false, reason: "unsupported-host" });
   });
 
-  it("runs undo through the composed host services and keeps the source placement", async () => {
+  it("runs undo in place through the composed host services", async () => {
     const directory = await tempDir();
-    const { ctx, routes, archived, emitted, inserted, pinned } = makeHarness({
+    const { ctx, routes, archived, dequeued, emitted, queued, recalls } = makeHarness({
       sessionControl: true,
     });
     apply(ctx as never, { stateFile: join(directory, "state.json"), sessionsRoot: directory });
     await vi.waitFor(() => expect(routes.size).toBe(5));
     await enable(routes, "undo-turn");
-    pinned.push("session-source", "session-other");
+    queued.push("queued-1");
 
     const undone = await routes.get(TOOLKIT_UNDO_PATH)?.(
       post(TOOLKIT_UNDO_PATH, { sessionId: "session-source" }),
     );
-    expect(await undone?.json()).toEqual({ childSessionId: "session-child", prompt: "two" });
-    expect(archived).toEqual(["session-source"]);
-    // 记账位置：插到原会话的后继之前；置顶位：顶替原会话在置顶集合里的序号。
-    expect(inserted).toEqual([{ sessionId: "session-child", before: "session-after" }]);
-    expect(pinned).toEqual(["session-child", "session-other"]);
-    // 宿主侧广播「会话已移除」，客户端据此把行摘掉（存活会话仍会被 session/list 列出）。
-    expect(emitted).toContainEqual(["api-session/removed", "session-source"]);
-    await vi.waitFor(async () => {
-      const handler = routes.get("/api/toolkit/hidden");
-      const hidden = await handler?.(new Request("http://x/api/toolkit/hidden"));
-      await expect(hidden?.json()).resolves.toEqual({ ids: ["session-source"] });
+    // 会话 id 不变：只剩切点、墓碑 seq 与原文。
+    expect(await undone?.json()).toEqual({ boundary: 4, seq: 5, prompt: "two" });
+    // 只写一条墓碑，且按当前表面覆盖到结尾。
+    expect(recalls).toHaveLength(1);
+    expect(recalls[0]).toMatchObject({
+      type: "system/message",
+      data: { recall: { boundary: 4, end: 4 }, message: { role: "system", content: [] } },
+      opts: { surfaceOp: { op: "replace", startSeq: 4, endSeq: 4 }, sourceEventSeqs: [4] },
     });
+    // 排队中的输入先清掉，撤完不会又被那条待发消息开一轮。
+    expect(dequeued).toEqual(["queued-1"]);
+    // 不再归档、不再广播移除、也不藏列表行。
+    expect(archived).toEqual([]);
+    expect(emitted).not.toContainEqual(["api-session/removed", "session-source"]);
+    const hidden = await routes.get("/api/toolkit/hidden")?.(
+      new Request("http://x/api/toolkit/hidden"),
+    );
+    await expect(hidden?.json()).resolves.toEqual({ ids: [] });
   });
 
   it("drops archived ids whose session no longer exists", async () => {

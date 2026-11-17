@@ -43,9 +43,15 @@ interface TokenMeterLike {
     readonly projectedTokens?: number;
     readonly contextWindow?: number;
   };
-  /** 当前表面每个节点的请求价；计遮蔽价用。 */
+  /**
+   * 当前表面每个节点的计价；计遮蔽价用。
+   *
+   * `heuristicTokens` 是固定启发式价（与路由无关），遮蔽价协议要求用它：
+   * 替换事件的 `shadowedTokenCount` 必须与追加时同一套估价口径一致，
+   * 用路由价会让折叠出来的上下文面积对不上（`dsh-token-meter/src/types.ts:37-53`）。
+   */
   measure?(session: RotationSession): {
-    readonly nodes: readonly { readonly seq: number; readonly tokens: number }[];
+    readonly nodes: readonly { readonly seq: number; readonly heuristicTokens: number }[];
   };
 }
 
@@ -351,6 +357,7 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
    * 就地遮蔽整段历史：保留 `nodes[0]`（系统提示，replace 覆盖它会抛），其余换成 seed。
    *
    * `compaction/prune` 必须紧邻 replace 且区间完全一致，否则 tokenMeter 折叠时抛错；
+   * `shadowedTokenCount` 用固定启发式价（`heuristicTokens`）而不是路由价；
    * `sourceEventSeqs` 要覆盖每一个被遮蔽节点。
    * @returns 注入的 seed 事件的 seq；表面只有系统提示时不重置，返回 undefined。
    */
@@ -366,7 +373,7 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
     const prices = meter?.measure?.(session).nodes ?? [];
     const shadowedTokenCount = prices
       .filter((node) => shadowed.includes(node.seq))
-      .reduce((sum, node) => sum + node.tokens, 0);
+      .reduce((sum, node) => sum + node.heuristicTokens, 0);
     session.append("compaction/prune", {
       shadowedRange: { start: first, end: last },
       shadowedSeqs: shadowed,

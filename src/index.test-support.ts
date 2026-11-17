@@ -38,40 +38,91 @@ export interface Harness {
   readonly unarchived: string[];
   readonly pinned: string[];
   readonly inserted: { sessionId: string; before: string | undefined }[];
+  /** 撤回写下的墓碑（就地撤回只写这一条）。 */
+  readonly recalls: AppendedRecall[];
+  /** 测试预置的排队输入 id；撤回应当逐条清掉。 */
+  readonly queued: string[];
+  readonly dequeued: string[];
   readonly emitted: (readonly [string, ...unknown[]])[];
   readonly warns: ReturnType<typeof vi.fn>;
   /** `ctx.provide` 提供的服务，按名字取。 */
   readonly provided: Record<string, unknown>;
 }
 
-/** 测试里可观察的宿主副作用（归档、置顶、记账顺序）。 */
+/** 撤回写进会话日志的一条事件。 */
+export interface AppendedRecall {
+  readonly type: string;
+  readonly data: Record<string, unknown>;
+  readonly opts: unknown;
+}
+
+/** 测试里可观察的宿主副作用（归档、置顶、记账顺序、撤回）。 */
 export interface HostFixture {
   readonly archived: string[];
   readonly unarchived: string[];
   readonly pinned: string[];
   readonly inserted: { sessionId: string; before: string | undefined }[];
+  readonly recalls: AppendedRecall[];
+  readonly queued: string[];
+  readonly dequeued: string[];
 }
 
-/** 会话控制与工作区替身：undo 与归档清扫用。 */
+/**
+ * 会话控制与工作区替身：就地撤回与归档清扫用。
+ *
+ * 会话替身只实现撤回真正用到的那几个成员（日志快照、表面节点、追加、落盘屏障），
+ * 队列替身只实现 `state` + `updateQueue({action:{kind:"remove"}})`。
+ */
 export const applySessionControl = (
   options: HarnessOptions,
   services: Record<string, unknown>,
   fixture: HostFixture,
 ): void => {
   if (options.sessionControl !== true && options.archiveSweep === undefined) return;
+  const log: { type: string; seq: number; data?: unknown; surfaceOp?: unknown }[] = [
+    { type: "turn/start", seq: 0, data: { turn: 1 } },
+    {
+      type: "user/message",
+      seq: 1,
+      data: { id: "message-1", content: [{ type: "text", text: "one" }] },
+      surfaceOp: "append",
+    },
+    { type: "turn/end", seq: 2, data: { turn: 1 } },
+    { type: "turn/start", seq: 3, data: { turn: 2 } },
+    {
+      type: "user/message",
+      seq: 4,
+      data: { id: "message-2", content: [{ type: "text", text: "two" }] },
+      surfaceOp: "append",
+    },
+  ];
+  const nodes = (): number[] =>
+    log.filter((event) => event.surfaceOp === "append").map((event) => event.seq);
   services["sessions"] = {
     get: () => ({
-      snapshotEvents: () => [
-        { type: "turn/start", seq: 0 },
-        { type: "user/message", seq: 1, data: { content: [{ type: "text", text: "one" }] } },
-        { type: "turn/end", seq: 2 },
-        { type: "turn/start", seq: 3 },
-        { type: "user/message", seq: 4, data: { content: [{ type: "text", text: "two" }] } },
-      ],
+      get seq() {
+        return log.length;
+      },
+      get surface() {
+        return { nodes: nodes() };
+      },
+      snapshotEvents: () => log,
+      append: (type: string, data: unknown, opts?: unknown) => {
+        const seq = log.length;
+        const written = (opts ?? {}) as { readonly surfaceOp?: unknown };
+        fixture.recalls.push({ type, data: data as Record<string, unknown>, opts });
+        log.push({ type, seq, data, surfaceOp: written.surfaceOp });
+        return { seq };
+      },
     }),
+    flush: async () => true,
   };
   services["sessionController"] = {
-    fork: async () => ({ sessionId: "session-child" }),
+    state: async () => ({ queue: fixture.queued.map((id) => ({ id })) }),
+    updateQueue: async (request: { readonly itemId: string }) => {
+      fixture.dequeued.push(request.itemId);
+      return { accepted: true };
+    },
   };
   services["workspaceRegistry"] = {
     list: () => [
@@ -139,8 +190,16 @@ export const makeHarness = (options: HarnessOptions = {}): Harness => {
   const routes = new Map<string, (request: Request) => Promise<Response>>();
   const providerNames: string[] = [];
   const disposers: (() => void)[] = [];
-  const fixture: HostFixture = { archived: [], unarchived: [], pinned: [], inserted: [] };
-  const { archived, unarchived, pinned, inserted } = fixture;
+  const fixture: HostFixture = {
+    archived: [],
+    unarchived: [],
+    pinned: [],
+    inserted: [],
+    recalls: [],
+    queued: [],
+    dequeued: [],
+  };
+  const { archived, unarchived, pinned, inserted, recalls, queued, dequeued } = fixture;
   const services: Record<string, unknown> = {
     connection:
       options.connection === false
@@ -216,6 +275,9 @@ export const makeHarness = (options: HarnessOptions = {}): Harness => {
     pinned,
     inserted,
     unarchived,
+    recalls,
+    queued,
+    dequeued,
     emitted,
     warns,
     provided,

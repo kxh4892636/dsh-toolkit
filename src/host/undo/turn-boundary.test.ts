@@ -1,13 +1,32 @@
 import { describe, expect, it } from "vite-plus/test";
 import { findUndoTarget, type UndoSessionEvent } from "./turn-boundary.js";
 
+/** 表面事件类型：真实日志里这些事件都带 `surfaceOp`。 */
+const SURFACE_TYPES = new Set([
+  "system/message",
+  "developer/message",
+  "user/message",
+  "assistant/message",
+  "tool/result",
+]);
+
+/** 按真实日志的形状造事件：消息事件默认追加到表面尾部。 */
 const events = (spec: readonly [string, unknown?][]): UndoSessionEvent[] =>
-  spec.map(([type, data], seq) => (data === undefined ? { type, seq } : { type, seq, data }));
+  spec.map(([type, data], seq) => ({
+    type,
+    seq,
+    ...(data === undefined ? {} : { data }),
+    ...(SURFACE_TYPES.has(type) ? { surfaceOp: "append" } : {}),
+  }));
 
 const userMessage = (text: string, kind = "user"): unknown => ({
   role: "user",
   content: [{ type: "text", text }],
   source: { kind },
+});
+
+const assistantMessage = (text: string): unknown => ({
+  message: { role: "assistant", content: [{ type: "text", text }] },
 });
 
 describe("findUndoTarget", () => {
@@ -20,13 +39,13 @@ describe("findUndoTarget", () => {
     const log = events([
       ["turn/start", { turn: 1 }],
       ["user/message", userMessage("你好")],
-      ["assistant/message", { message: { role: "assistant", content: [] } }],
+      ["assistant/message", assistantMessage("在")],
       ["turn/end", { turn: 1 }],
     ]);
     expect(findUndoTarget(log)).toBeUndefined();
   });
 
-  it("cuts one event before the last turn starts", () => {
+  it("takes the last turn's user message as the recall boundary", () => {
     const log = events([
       ["turn/start", { turn: 1 }],
       ["user/message", userMessage("第一轮")],
@@ -34,8 +53,12 @@ describe("findUndoTarget", () => {
       ["turn/start", { turn: 2 }],
       ["user/message", userMessage("第二轮")],
     ]);
-    const target = findUndoTarget(log);
-    expect(target).toEqual({ turn: 2, turnStartSeq: 3, cutSeq: 2, prompt: "第二轮" });
+    expect(findUndoTarget(log)).toEqual({
+      turn: 2,
+      turnStartSeq: 3,
+      boundarySeq: 4,
+      prompt: "第二轮",
+    });
   });
 
   it("handles a running turn after several completed turns", () => {
@@ -52,7 +75,8 @@ describe("findUndoTarget", () => {
     ]);
     const target = findUndoTarget(log);
     expect(target?.turn).toBe(3);
-    expect(target?.cutSeq).toBe(5);
+    expect(target?.turnStartSeq).toBe(6);
+    expect(target?.boundarySeq).toBe(7);
     expect(target?.prompt).toBe("c");
   });
 
@@ -73,7 +97,10 @@ describe("findUndoTarget", () => {
       ],
       ["user/message", userMessage("steer")],
     ]);
-    expect(findUndoTarget(log)?.prompt).toBe("two\n\nsteer");
+    const target = findUndoTarget(log);
+    // 切点停在第一条用户消息上：注入的上下文与追加的引导消息都随整段一起遮蔽。
+    expect(target?.boundarySeq).toBe(4);
+    expect(target?.prompt).toBe("two\n\nsteer");
   });
 
   it("ignores non-text parts and messages without a source", () => {
@@ -87,48 +114,56 @@ describe("findUndoTarget", () => {
     expect(findUndoTarget(log)?.prompt).toBe("png");
   });
 
-  it("keeps an empty prompt when the turn carries no user text", () => {
+  it("falls back to the turn's assistant message when it carries no user text", () => {
     const log = events([
       ["turn/start", { turn: 1 }],
+      ["user/message", userMessage("x")],
       ["turn/end", { turn: 1 }],
       ["turn/start", { turn: 2 }],
+      ["assistant/message", assistantMessage("自动续跑")],
     ]);
-    expect(findUndoTarget(log)?.prompt).toBe("");
+    const target = findUndoTarget(log);
+    expect(target?.boundarySeq).toBe(4);
+    expect(target?.prompt).toBe("");
   });
 
-  it("returns undefined when seq values are not contiguous with the array", () => {
+  it("returns undefined when the last turn carries no surface message", () => {
+    const log = events([
+      ["turn/start", { turn: 1 }],
+      ["user/message", userMessage("x")],
+      ["turn/end", { turn: 1 }],
+      ["turn/start", { turn: 2 }],
+      ["turn/end", { turn: 2 }],
+    ]);
+    expect(findUndoTarget(log)).toBeUndefined();
+  });
+
+  it("ignores messages that are surface replacements, not appends", () => {
     const log: UndoSessionEvent[] = [
-      { type: "turn/start", seq: 10, data: { turn: 1 } },
-      { type: "turn/end", seq: 11, data: { turn: 1 } },
-      { type: "turn/start", seq: 12, data: { turn: 2 } },
+      ...events([
+        ["turn/start", { turn: 1 }],
+        ["user/message", userMessage("x")],
+        ["turn/end", { turn: 1 }],
+        ["turn/start", { turn: 2 }],
+      ]),
+      {
+        type: "user/message",
+        seq: 4,
+        data: userMessage("种子"),
+        surfaceOp: { op: "replace", startSeq: 1, endSeq: 1 },
+      },
     ];
     expect(findUndoTarget(log)).toBeUndefined();
   });
 
-  it("skips queued-input bookkeeping so a fork does not inherit the undone prompt", () => {
-    // 真机日志形态：提示词先进 inbox（agent/inbox/spliced），随后才是 turn/start。
+  it("keeps the turn number declared by turn/start", () => {
     const log = events([
-      ["turn/start", { turn: 1 }],
-      ["user/message", userMessage("one")],
-      ["turn/end", { turn: 1 }],
-      ["agent/inbox/spliced", { target: "next-turn", inserted: [{ content: [] }] }],
-      ["turn/start", { turn: 2 }],
-      ["agent/inbox/spliced", { target: "next-turn", removedCount: 1, inserted: [] }],
-      ["user/message", userMessage("two")],
+      ["turn/start", { turn: 4 }],
+      ["user/message", userMessage("a")],
+      ["turn/end", { turn: 4 }],
+      ["turn/start", { turn: 5 }],
+      ["user/message", userMessage("b")],
     ]);
-    const target = findUndoTarget(log);
-    expect(target?.cutSeq).toBe(2);
-    expect(target?.prompt).toBe("two");
-  });
-
-  it("drops every trailing inbox event before the target turn", () => {
-    const log = events([
-      ["turn/start", { turn: 1 }],
-      ["turn/end", { turn: 1 }],
-      ["agent/inbox/spliced", {}],
-      ["agent/inbox/spliced", {}],
-      ["turn/start", { turn: 2 }],
-    ]);
-    expect(findUndoTarget(log)?.cutSeq).toBe(1);
+    expect(findUndoTarget(log)?.turn).toBe(5);
   });
 });

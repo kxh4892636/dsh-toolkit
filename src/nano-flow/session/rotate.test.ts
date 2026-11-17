@@ -120,7 +120,15 @@ const makeHarness = (
       if (name === "tokenMeter") {
         return {
           contextPressure: () => pressure,
-          measure: () => ({ nodes: session.surface.nodes.map((seq) => ({ seq, tokens: 100 })) }),
+          measure: () => ({
+            // 路由价（tokens）与固定启发式价（heuristicTokens）故意不同：
+            // 遮蔽价协议要求后者，用错会折叠出对不上的上下文面积。
+            nodes: session.surface.nodes.map((seq) => ({
+              seq,
+              tokens: 100,
+              heuristicTokens: 40,
+            })),
+          }),
         };
       }
       if (name === "sessionController") return controller;
@@ -261,7 +269,8 @@ describe("in-place reset", () => {
     // nodes[0] 是系统提示（seq 1），只能从第二个节点开始遮蔽。
     expect(prune?.data["shadowedRange"]).toEqual({ start: 3, end: 5 });
     expect(prune?.data["shadowedSeqs"]).toEqual([3, 5]);
-    expect(prune?.data["shadowedTokenCount"]).toBe(200);
+    // 两个被遮蔽节点按固定启发式价计（40 × 2），不是路由价（100 × 2）。
+    expect(prune?.data["shadowedTokenCount"]).toBe(80);
     expect(seed?.opts).toMatchObject({
       surfaceOp: { op: "replace", startSeq: 3, endSeq: 5 },
       sourceEventSeqs: [3, 5],

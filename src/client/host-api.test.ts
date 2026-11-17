@@ -153,17 +153,40 @@ describe("host api", () => {
     await expect(fetchUndoAvailability("s1")).resolves.toEqual({ available: false });
   });
 
-  it("runs undo and validates the result", async () => {
-    const fetchMock = vi.fn(async () => json({ childSessionId: "session-child", prompt: "x" }));
+  it("runs undo and reads the in-place cut points", async () => {
+    const fetchMock = vi.fn(async () => json({ boundary: 10, seq: 20, prompt: "x" }));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(runUndoTurn("s1")).resolves.toEqual({
-      childSessionId: "session-child",
-      prompt: "x",
-    });
+    await expect(runUndoTurn("s1")).resolves.toEqual({ boundary: 10, seq: 20, prompt: "x" });
+    const [target, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(target).toBe("api/toolkit/undo-turn");
+    expect(init.body).toBe('{"sessionId":"s1"}');
+  });
 
+  it("accepts the {ok, value} envelope as well as a flat payload", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json({ ok: true, value: { boundary: 3, seq: 9, prompt: "" } })),
+    );
+    await expect(runUndoTurn("s1")).resolves.toEqual({ boundary: 3, seq: 9, prompt: "" });
+  });
+
+  it("rejects undo payloads without usable cut points", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => json({ prompt: "x" })),
+    );
+    await expect(runUndoTurn("s1")).rejects.toMatchObject({ code: "invalid-response" });
+
+    // 切点必须是整数 seq；end 不能早于 boundary。
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json({ boundary: 10, seq: 9, prompt: "x" })),
+    );
+    await expect(runUndoTurn("s1")).rejects.toMatchObject({ code: "invalid-response" });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json({ boundary: 1.5, seq: 9, prompt: "x" })),
     );
     await expect(runUndoTurn("s1")).rejects.toMatchObject({ code: "invalid-response" });
   });

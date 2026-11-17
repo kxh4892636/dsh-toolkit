@@ -49,12 +49,15 @@ import {
   UndoUnavailableError,
   inspectUndo,
   undoTurn,
+  type UndoAgentLookup,
+  type UndoAnchor,
   type UndoDeps,
+  type UndoQueueController,
+  type UndoSessionStore,
 } from "./host/undo/undo-turn.js";
 import {
   hasMethod,
   serviceOf,
-  type HostSessionController,
   type HostSessionPersistence,
   type HostSessionStore,
   type HostWorkspaceRegistry,
@@ -205,7 +208,7 @@ export const apply = (ctx: Context, config: Config = {}): void => {
       logger: ctx.logger,
       undo: {
         inspect: (sessionId: string) => runtime.inspect(sessionId),
-        run: (sessionId: string) => runtime.undo(sessionId),
+        run: (sessionId: string, anchor?: UndoAnchor) => runtime.undo(sessionId, anchor),
       },
       hiddenSessions: () => runtime.hiddenSessions(),
       nanoFlow: {
@@ -328,8 +331,9 @@ interface ToolkitRuntime {
   /** 当前会话要展示的未完成 note 快照；不写会话日志。 */
   notesOf(sessionId: string): NotesSnapshot | null;
   inspect(sessionId: string): UndoAvailability;
-  undo(sessionId: string): Promise<UndoTurnResponse>;
-  /** 工作区注册表就绪后，把日志已删的会话从归档集合里摘掉。 */
+  /** 就地撤回最后一轮；`anchor` 是客户端确认时携带的消息锚点。 */
+  undo(sessionId: string, anchor?: UndoAnchor): Promise<UndoTurnResponse>;
+  /** 工作区注册表就绪后，把日志已删的会话从归档集合里摘掉（旧的删除式撤回留下的痕迹）。 */
   cleanupArchive(ctx: Context): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -352,37 +356,37 @@ const createRuntime = (ctx: Context, config: Config, planLog: PlanLogService): T
     createNanoFlowTool({ entryUrl: nanoFlowEntryUrl(import.meta.url) }),
   ];
   const registry = new ToolkitRegistry({ ctx, tools, store, logger });
-  /** 广播「会话已移除」：`api-session/removed` 是宿主销毁会话时客户端依赖的那条事件。 */
+  /**
+   * 广播「会话已移除」：`api-session/removed` 是宿主销毁会话时客户端依赖的那条事件。
+   *
+   * 就地撤回不再走这条路径（会话还在），只有显式删除会话的入口用它。
+   */
   const registerRemoval = (sessionId: string): void => {
-    // 会话没了，轨迹服务也要放开它的读句柄；否则每次轮转留一个句柄。
+    // 会话没了，轨迹服务也要放开它的读句柄。
     void planLog.forget(sessionId);
     const emit = (ctx as { emit?: (event: string, ...args: unknown[]) => void }).emit;
     if (typeof emit !== "function") return;
     emit.call(ctx, "api-session/removed", sessionId);
   };
+  /**
+   * 就地撤回的宿主能力：会话存储是硬依赖，队列清理是软依赖
+   * （宿主不暴露 `sessionController.state/updateQueue` 时撤回照常进行）。
+   */
   const undoTarget = (): UndoDeps | undefined => {
-    const sessions = serviceOf<HostSessionStore>(ctx, "sessions");
-    const controller = serviceOf<HostSessionController>(ctx, "sessionController");
-    if (!hasMethod<HostSessionStore>(sessions, "get")) return undefined;
-    if (!hasMethod<HostSessionController>(controller, "fork")) return undefined;
+    const sessions = serviceOf<UndoSessionStore>(ctx, "sessions");
+    if (!hasMethod<UndoSessionStore>(sessions, "get")) return undefined;
+    const controller = serviceOf<UndoQueueController>(ctx, "sessionController");
+    const queue =
+      hasMethod<UndoQueueController>(controller, "state") &&
+      hasMethod<UndoQueueController>(controller, "updateQueue")
+        ? controller
+        : undefined;
+    const agents = serviceOf<UndoAgentLookup>(ctx, "agents");
     return {
       sessions,
-      controller,
-      workspaces: workspaceRegistry(ctx),
-      store,
-      sessionsRoot,
       logger,
-      announceRemoved: (sessionId: string) => {
-        void store.addHiddenSession(sessionId).catch((error: unknown) => {
-          logger.warn(`toolkit: recording hidden session failed: ${describeError(error)}`);
-        });
-        try {
-          // 宿主「会话已销毁」用的同一条广播：客户端据此把那一行摘掉。
-          registerRemoval?.(sessionId);
-        } catch (error) {
-          logger.warn(`toolkit: announcing removal failed: ${describeError(error)}`);
-        }
-      },
+      ...(queue === undefined ? {} : { controller: queue }),
+      ...(hasMethod<UndoAgentLookup>(agents, "get") ? { agents } : {}),
     };
   };
   /**
@@ -506,12 +510,12 @@ const createRuntime = (ctx: Context, config: Config, planLog: PlanLogService): T
       if (deps === undefined) return { available: false, reason: "unsupported-host" };
       return inspectUndo(deps, sessionId);
     },
-    async undo(sessionId) {
+    async undo(sessionId, anchor) {
       const deps = undoTarget();
       if (deps === undefined) {
-        throw new UndoUnavailableError("unsupported-host", "this host exposes no session control");
+        throw new UndoUnavailableError("unsupported-host", "this host exposes no session store");
       }
-      return undoTurn(deps, sessionId);
+      return undoTurn(deps, sessionId, anchor);
     },
   };
 };
