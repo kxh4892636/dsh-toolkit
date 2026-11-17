@@ -90,7 +90,7 @@ interface RotationOptions {
 
 /** 轮转前注入的那一轮：先把检查点写回磁盘，压缩后上下文里才还留着进度。 */
 export const PRE_COMPACT_PROMPT =
-  "（轮转前检查点）更新当前 Plan 的 `spec.md` 与 note：进度、证据、下一步，然后结束这一轮。";
+  "（轮转前检查点）更新当前 Plan 的 `spec.md` 与 note，然后结束这一轮。";
 
 /** 轮转后注入的那一轮：从磁盘重建状态，再跑一次文档校验。 */
 export const POST_COMPACT_PROMPT =

@@ -215,7 +215,6 @@ describe("two fixed prompts", () => {
   it("压缩前写回检查点，压缩后读回并校验", () => {
     expect(PRE_COMPACT_PROMPT).toContain("spec.md");
     expect(PRE_COMPACT_PROMPT).toContain("note");
-    expect(PRE_COMPACT_PROMPT).toContain("下一步");
     expect(POST_COMPACT_PROMPT).toContain("spec.md");
     expect(POST_COMPACT_PROMPT).toContain("notes_index.md");
     expect(POST_COMPACT_PROMPT).toContain("nano_flow_check");
