@@ -362,7 +362,10 @@ describe("toolkit plugin entry", () => {
     expect(recalls).toHaveLength(1);
     expect(recalls[0]).toMatchObject({
       type: "system/message",
-      data: { recall: { boundary: 4, end: 4 }, message: { role: "system", content: [] } },
+      data: {
+        recall: { sessionId: "session-source", boundary: 4, end: 4 },
+        message: { role: "system", content: [] },
+      },
       opts: { surfaceOp: { op: "replace", startSeq: 4, endSeq: 4 }, sourceEventSeqs: [4] },
     });
     // 排队中的输入先清掉，撤完不会又被那条待发消息开一轮。
