@@ -87,10 +87,12 @@ export const createNanoFlowPreset = (entryUrl: string): PresetDefinitionLike => 
     { id: "skill-filesystem", name: "@deepseek-ai/dsh-skill-filesystem" },
     { id: "tool-skill", name: "@deepseek-ai/dsh-tool-skill" },
     { id: "tool-schedule", name: "@deepseek-ai/dsh-tool-schedule" },
-    // 压缩引擎：轮转只在压力达阈值时调 `agent.ctx.get('compaction').compactNow()`，
+    // 压缩引擎：轮转只在压力达阈值时调预设 realm 里的 `compaction.compactNow()`，
     // 由它自己摘要旧历史。`auto: false` 关掉按步/按模型切换的自动压缩，
     // 不挂 `dsh-command-compact` 也就不暴露 `/compact`。
-    // 引擎挂在 isolate 过的 group 里：`compaction` 服务在预设作用域解析。
+    // 引擎挂在 isolate 过的 group 里，服务发布在 realm 私有 symbol 下，根作用域取不到：
+    // 所以同一个 group 里再挂一行本包，只把引擎登记进模块级桥（本包被挂两次，模块级变量跨
+    // realm 可见）。消费者必须在同一 realm，与宿主自己的 `command-compact` 同理。
     {
       id: "compaction",
       name: "cordis:group",
@@ -101,6 +103,11 @@ export const createNanoFlowPreset = (entryUrl: string): PresetDefinitionLike => 
           id: "compaction-basic",
           name: "@deepseek-ai/dsh-compaction-basic",
           config: { auto: false },
+        },
+        {
+          id: "nano-flow-compaction-bridge",
+          name: entryUrl,
+          config: { nanoFlowOnly: true, compactBridgeOnly: true },
         },
       ],
     },

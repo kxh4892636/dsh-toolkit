@@ -12,4 +12,9 @@ export interface Config {
   workspace?: string;
   /** 领域根（相对工作区根或绝对路径）；缺省 `.agents/domains`。 */
   domainRoot?: string;
+  /**
+   * 预设行开关：只把该 realm 的压缩引擎登记进模块级桥，不注册工具、技能与提示词。
+   * 这一行挂在 `isolate: { compaction: true }` 的 group 里，是轮转唯一能看到引擎的途径。
+   */
+  compactBridgeOnly?: boolean;
 }

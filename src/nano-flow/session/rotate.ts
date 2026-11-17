@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { NanoFlowSettings } from "../../contract.js";
 import { describeError } from "../../shared/errors.js";
+import { getCompactionBridge, type CompactionBridge } from "../assembly/compaction-bridge.js";
 import type { HostServices } from "./services.js";
 
 /** 会话的最小形状：id、header 与日志快照。 */
@@ -50,25 +51,9 @@ interface SessionControllerLike {
   prompt(request: PromptRequestLike, signal: AbortSignal): Promise<{ accepted: boolean }>;
 }
 
-/** 宿主的 agent：与 session 同 id，`ctx` 沿父链解析到预设作用域。 */
-interface AgentLike {
-  readonly id: string;
-  readonly ctx?: { get(name: string): unknown };
-}
-
-/** `agents` 注册表：只取存活 agent。 */
+/** `agents` 注册表：只取存活 agent（agent 与 session 同 id）。 */
 interface AgentsLike {
   get(id: string): unknown;
-}
-
-/**
- * 预设作用域里的压缩引擎（`agent.ctx.get('compaction')`）。
- *
- * 手动路径要求 agent 处于 idle 且没有开着的 turn，否则抛 `ManualCompactionError('busy')`；
- * 内部自己 `sessions.flush`，写 `compaction/start|summary|end` 与一条替换用户消息。
- */
-interface CompactionEngineLike {
-  compactNow(agent: unknown, signal: AbortSignal): Promise<unknown>;
 }
 
 /**
@@ -214,17 +199,17 @@ interface RotationEngine {
   attach(): () => void;
 }
 
-/** 一次轮转的目标：agent 与它作用域里的压缩引擎。 */
+/** 一次轮转的目标：agent 与从预设 realm 登记过来的压缩桥。 */
 interface RotationTarget {
   readonly agent: unknown;
-  readonly engine: CompactionEngineLike;
+  readonly bridge: CompactionBridge;
 }
 
 /**
  * 创建轮转引擎：`queue` 消息到达且上下文压力达阈值时，串行跑四步，先把用户消息扣住。
  *
  * 1. 注入一轮「把进度写回 spec 与 note」，等它结束；
- * 2. `agent.ctx.get('compaction').compactNow(agent, signal)`，由宿主的压缩引擎摘要旧历史；
+ * 2. 预设 realm 里登记过来的压缩桥（`compaction.compactNow(agent, signal)`）摘要旧历史；
  * 3. 注入一轮「读回 spec 与 notes_index，再跑 nano_flow_check」，等它结束；
  * 4. 放行用户原来那条消息。
  *
@@ -249,22 +234,19 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
   /** 上一次轮转完成时的最大 seq；要有新的 assistant 输出才允许再轮转。 */
   const rotatedAt = new Map<string, number>();
 
-  /** agent 与它作用域里的压缩引擎；缺 agents 服务、缺 agent 或缺引擎时 undefined。 */
+  /**
+   * agent 与压缩桥；缺 agents 服务、缺 agent 或没登记桥时 undefined。
+   *
+   * 引擎不能从 `agent.ctx.get('compaction')` 取：它在预设的 isolate realm 里，
+   * 根作用域看不到。引擎由预设内 `compactBridgeOnly` 那一行登记进模块级桥。
+   */
   const targetOf = (sessionId: string): RotationTarget | undefined => {
     const agents = service<AgentsLike>(services, "agents");
-    const agent = agents?.get(sessionId) as AgentLike | undefined;
+    const agent = agents?.get(sessionId);
     if (agent === undefined || agent === null) return undefined;
-    let engine: unknown;
-    try {
-      engine = agent.ctx?.get("compaction");
-    } catch {
-      // 预设没挂压缩、或 ctx 已卸载：按「没有引擎」处理。
-      return undefined;
-    }
-    if (typeof (engine as Partial<CompactionEngineLike> | undefined)?.compactNow !== "function") {
-      return undefined;
-    }
-    return { agent, engine: engine as CompactionEngineLike };
+    const bridge = getCompactionBridge();
+    if (bridge === undefined) return undefined;
+    return { agent, bridge };
   };
 
   const original =
@@ -326,10 +308,16 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
     }
   };
 
-  /** 让宿主的压缩引擎摘要旧历史；失败（含 `busy`）只 warn。 */
+  /**
+   * 让预设 realm 里的压缩引擎摘要旧历史；失败（含 `busy`）只 warn。
+   *
+   * 引擎的手动路径要求 agent 处于 idle 且没有开着的 turn，否则抛
+   * `ManualCompactionError('busy')`；内部自己 `sessions.flush`，写
+   * `compaction/start|summary|end` 与一条替换用户消息。
+   */
   const compactNow = async (rotation: RotationTarget, signal: AbortSignal): Promise<void> => {
     try {
-      await rotation.engine.compactNow(rotation.agent, signal);
+      await rotation.bridge(rotation.agent, signal);
     } catch (error) {
       const code = (error as { code?: unknown } | null)?.code;
       const suffix = typeof code === "string" && code !== "" ? ` (${code})` : "";
@@ -356,9 +344,9 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
     if (rotating.has(session.id)) return fallback();
     const rotation = targetOf(session.id);
     if (rotation === undefined) {
-      // 过阈值却没有压缩引擎（预设没挂、或作用域里取不到）：静默不轮转会让上下文一路涨，留一条痕。
+      // 过阈值却没有压缩桥（预设没挂、或那一行没登记上）：静默不轮转会让上下文一路涨，留一条痕。
       services.logger.warn(
-        `nano-flow: rotation skipped for "${session.id}": this preset exposes no compaction engine`,
+        `nano-flow: rotation skipped for "${session.id}": this preset exposes no compaction bridge`,
       );
       return fallback();
     }

@@ -25,6 +25,7 @@ import { createCheckTool } from "../documents/check.js";
 import { createCreateTool } from "../planning/create.js";
 import { createDreamTool } from "../dream/tool.js";
 import { createToolRuntime } from "../session/tool-runtime.js";
+import { setCompactionBridge } from "./compaction-bridge.js";
 
 export { createAssetSkillProvider, ASSET_SKILL_RANK } from "../skills.js";
 import { describeError } from "../../shared/errors.js";
@@ -102,6 +103,37 @@ export const applyNanoFlow = (ctx: Context, config: NanoFlowConfig): void => {
   });
   ctx.inject(["tools", "systemPrompt"], (child: Context) => {
     mountNanoFlow(child, ctx, config);
+  });
+};
+
+/** 压缩引擎的最小形状：轮转只用到 `compactNow`。 */
+interface CompactionEngineLike {
+  compactNow(agent: unknown, signal: AbortSignal): Promise<unknown>;
+}
+
+/**
+ * 预设内「只挂压缩桥」的那一行（`config.compactBridgeOnly === true`）。
+ *
+ * 这一行由预设挂在 `isolate: { compaction: true }` 的 group 里，所以它自己的
+ * `ctx.compaction` 解析到真实引擎；把它封成函数放进模块级槽，宿主半的轮转走同一个
+ * ES 模块就能拿到（服务过不了 realm，变量可以）。
+ *
+ * 只做这件事：不注册工具、skill 与提示词，登记完即返回。引擎缺席（group 没挂
+ * `compaction-basic`）时只在诊断里留痕，轮转按「没有桥」处理。
+ * @param ctx - 预设作用域上下文（引擎在这个 realm 里可见）。
+ * @param config - 插件配置；只读 `compactBridgeOnly`。
+ */
+export const applyCompactionBridge = (ctx: Context, config: NanoFlowConfig): void => {
+  recordMount("bridge", { requested: config.compactBridgeOnly === true, engine: false });
+  ctx.inject(["compaction"], (child: Context) => {
+    const engine = serviceOf<CompactionEngineLike>(child, "compaction");
+    if (engine === undefined || typeof engine.compactNow !== "function") {
+      recordMount("bridge", { requested: true, engine: false });
+      return;
+    }
+    const dispose = setCompactionBridge((agent, signal) => engine.compactNow(agent, signal));
+    child.effect(() => dispose, "nano-flow compaction bridge");
+    recordMount("bridge", { requested: true, engine: true });
   });
 };
 

@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { DEFAULT_NANO_FLOW_SETTINGS } from "../../contract.js";
 import { disableMountReport } from "../session/mount-report.js";
+import { clearCompactionBridge, getCompactionBridge } from "./compaction-bridge.js";
 import {
+  applyCompactionBridge,
   applyNanoFlow,
   createSettingsReader,
   PROMPT_SECTION,
@@ -112,6 +114,79 @@ describe("createSettingsReader", () => {
       get: () => ({ settings: () => ({ ...DEFAULT_NANO_FLOW_SETTINGS, noteMaxBytes: 1 }) }),
     } as unknown as HostServices;
     expect(createSettingsReader(facade)().noteMaxBytes).toBe(1);
+  });
+});
+
+interface BridgeHarness {
+  readonly ctx: Context;
+  readonly deps: string[][];
+  readonly disposers: (() => void)[];
+  readonly tools: string[];
+}
+
+/** 只挂压缩引擎的假上下文：`compaction` 在这个作用域里可见。 */
+const makeBridgeHarness = (engine: unknown): BridgeHarness => {
+  const deps: string[][] = [];
+  const disposers: (() => void)[] = [];
+  const tools: string[] = [];
+  const ctx = {
+    get: (name: string) => (name === "compaction" ? engine : undefined),
+    inject: (names: string[], callback: (child: unknown) => void) => {
+      deps.push(names);
+      callback(ctx);
+    },
+    effect: (factory: () => () => void) => {
+      disposers.push(factory());
+    },
+    logger: { warn: () => {} },
+    tools: {
+      register: (definition: { name: string }) => {
+        tools.push(definition.name);
+        return () => {};
+      },
+    },
+    systemPrompt: {
+      section: () => () => {},
+      context: () => () => {},
+    },
+    skills: { registerProvider: () => () => {} },
+    on: () => () => {},
+  } as unknown as Context;
+  return { ctx, deps, disposers, tools };
+};
+
+describe("applyCompactionBridge", () => {
+  afterEach(() => {
+    clearCompactionBridge();
+  });
+
+  it("注入 compaction 服务并把引擎登记成桥，别的都不做", async () => {
+    const engine = { compactNow: vi.fn(async () => "compacted") };
+    const harness = makeBridgeHarness(engine);
+    applyCompactionBridge(harness.ctx, { compactBridgeOnly: true });
+    expect(harness.deps).toEqual([["compaction"]]);
+    // 这一行不注册工具/技能/提示词。
+    expect(harness.tools).toEqual([]);
+    const bridge = getCompactionBridge();
+    expect(bridge).toBeTypeOf("function");
+    const agent = { id: "session-1" };
+    const abort = new AbortController().signal;
+    await expect(bridge?.(agent, abort)).resolves.toBe("compacted");
+    expect(engine.compactNow).toHaveBeenCalledWith(agent, abort);
+  });
+
+  it("卸载时清掉自己登记的桥", () => {
+    const harness = makeBridgeHarness({ compactNow: async () => null });
+    applyCompactionBridge(harness.ctx, { compactBridgeOnly: true });
+    expect(getCompactionBridge()).toBeTypeOf("function");
+    for (const dispose of harness.disposers) dispose();
+    expect(getCompactionBridge()).toBeUndefined();
+  });
+
+  it("group 里没有引擎时不登记，也不抛错", () => {
+    const harness = makeBridgeHarness(undefined);
+    expect(() => applyCompactionBridge(harness.ctx, { compactBridgeOnly: true })).not.toThrow();
+    expect(getCompactionBridge()).toBeUndefined();
   });
 });
 

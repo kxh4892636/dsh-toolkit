@@ -15,7 +15,7 @@ import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 const MOUNT_REPORT_FILE = "nano-flow-mount.json";
 
 /** 一次挂载的阶段：进入插件入口、进入预设半、注册完成、抛错，以及宿主侧的轮转挂载。 */
-type MountStage = "entry" | "apply" | "ready" | "error" | "rotation";
+type MountStage = "entry" | "apply" | "ready" | "error" | "rotation" | "bridge";
 
 /** 落盘的报告形状：同一进程内按阶段合并。 */
 interface MountReport {

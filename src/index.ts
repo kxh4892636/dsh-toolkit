@@ -8,7 +8,7 @@ import type { NanoFlowSettings, NotesSnapshot } from "./contract.js";
 import { createNanoFlowSettingsStore, nodeNanoFlowSettingsIo } from "./host/nano-flow-settings.js";
 import { NANO_FLOW_SERVICE, type ToolkitNanoFlowFacade } from "./host/nano-flow-facade.js";
 import { createNanoFlowTool } from "./host/tools/nano-flow.js";
-import { applyNanoFlow } from "./nano-flow/assembly/plugin.js";
+import { applyCompactionBridge, applyNanoFlow } from "./nano-flow/assembly/plugin.js";
 import { recordMount, restoreMountReport } from "./nano-flow/session/mount-report.js";
 import { buildNotesSnapshot } from "./nano-flow/planning/notes.js";
 import { NANO_FLOW_PRESET_ID, nanoFlowEntryUrl } from "./nano-flow/assembly/preset.js";
@@ -61,6 +61,8 @@ export type Config = NestedSkillOptions & {
   domainRoot?: string;
   /** 内部：为 true 时只挂载 Nano Flow 预设内的那一半（由预设行传入）。 */
   nanoFlowOnly?: boolean;
+  /** 内部：为 true 时只把该 realm 的压缩引擎登记进模块级桥（由压缩 group 内的那一行传入）。 */
+  compactBridgeOnly?: boolean;
 };
 
 export const Config: Schema<Config> = z.object({
@@ -78,6 +80,7 @@ export const Config: Schema<Config> = z.object({
   workspace: z.string(),
   domainRoot: z.string(),
   nanoFlowOnly: z.boolean(),
+  compactBridgeOnly: z.boolean(),
 });
 
 /** 写入或切换会话↔Plan 绑定；显式绑定工具用，覆盖旧值。 */
@@ -158,8 +161,14 @@ export const inject = ["skills"];
 export const apply = (ctx: Context, config: Config = {}): void => {
   recordMount("entry", {
     nanoFlowOnly: config.nanoFlowOnly === true,
-    via: config.nanoFlowOnly === true ? "preset" : "root",
+    compactBridgeOnly: config.compactBridgeOnly === true,
+    via: config.nanoFlowOnly === true || config.compactBridgeOnly === true ? "preset" : "root",
   });
+  // 只挂压缩桥的那一行（压缩 group 内）：先把该 realm 的引擎登记进模块级槽，别的都不做。
+  if (config.compactBridgeOnly === true) {
+    applyCompactionBridge(ctx, config);
+    return;
+  }
   if (config.nanoFlowOnly === true) {
     applyNanoFlow(ctx, config);
     return;

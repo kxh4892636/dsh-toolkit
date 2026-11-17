@@ -39,9 +39,25 @@ describe("nano-flow preset", () => {
     expect(group?.name).toBe("cordis:group");
     expect(group?.isolate).toEqual({ compaction: true });
     const children = group?.config as { id: string; name: string; config?: unknown }[];
-    expect(children.map((row) => row.id)).toEqual(["compaction-basic"]);
+    expect(children.map((row) => row.id)).toEqual([
+      "compaction-basic",
+      "nano-flow-compaction-bridge",
+    ]);
     expect(children[0]?.name).toBe("@deepseek-ai/dsh-compaction-basic");
     expect(children[0]?.config).toEqual({ auto: false });
+  });
+
+  it("同一 group 里挂本包的第二行，只登记压缩桥", () => {
+    const group = preset.plugins.find((row) => row.id === "compaction");
+    const children = group?.config as { id: string; name: string; config?: unknown }[];
+    const bridge = children.find((row) => row.id === "nano-flow-compaction-bridge");
+    // 引擎发布在 realm 私有 symbol 下，根作用域取不到：消费者必须挂在同一个 group 里。
+    expect(bridge?.name).toBe("file:///tmp/nano-flow.mjs");
+    expect(bridge?.config).toEqual({ nanoFlowOnly: true, compactBridgeOnly: true });
+    // 两行挂的是同一个模块文件：模块级桥才能跨 realm 可见。
+    const topLevel = preset.plugins.find((row) => row.id === "nano-flow");
+    expect(topLevel?.name).toBe("file:///tmp/nano-flow.mjs");
+    expect(bridge?.name).toBe(topLevel?.name);
   });
 
   it("挂载定时任务工具，供 dream 任务创建", () => {

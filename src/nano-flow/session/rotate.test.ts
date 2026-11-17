@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { DEFAULT_NANO_FLOW_SETTINGS } from "../../contract.js";
+import { clearCompactionBridge, setCompactionBridge } from "../assembly/compaction-bridge.js";
 import {
   createRotation,
   POST_COMPACT_PROMPT,
@@ -20,6 +21,11 @@ type Pressure = {
 type EventLike = { type: string; seq?: number; data?: unknown };
 
 const signal = new AbortController().signal;
+
+afterEach(() => {
+  // 桥是模块级槽：每个用例自己登记，跑完清空，免得串味。
+  clearCompactionBridge();
+});
 
 /** 一轮事件：turn/start + 一条 assistant 消息 + turn/end。 */
 const turnEvents = (from: number, turn: number): readonly EventLike[] => [
@@ -57,7 +63,8 @@ const makeHarness = (
     session?: ReturnType<typeof makeSession>;
     meter?: boolean;
     agents?: boolean;
-    compaction?: boolean;
+    /** 预设里是否登记了压缩桥。 */
+    bridge?: boolean;
     seam?: boolean;
     /** 注入第几轮时 throw：0 = 压缩前，1 = 压缩后。 */
     failInjectAt?: number;
@@ -77,19 +84,17 @@ const makeHarness = (
   const pending: Pending[] = [];
   const warn = vi.fn();
   const engine = {
-    compactNow: vi.fn(async () => {
+    compactNow: vi.fn(async (_agent: unknown, _signal: AbortSignal) => {
       steps.push("compact");
       if (options.compactError !== undefined) throw options.compactError;
       return null;
     }),
   };
-  const agent = {
-    id: session.id,
-    ctx: {
-      get: (name: string) =>
-        name === "compaction" && options.compaction !== false ? engine : undefined,
-    },
-  };
+  // 桥＝预设内 `compactBridgeOnly` 那一行：把该 realm 的引擎封成 (agent, signal) 的函数。
+  if (options.bridge !== false) {
+    setCompactionBridge((agent, inner) => engine.compactNow(agent, inner));
+  }
+  const agent = { id: session.id };
   const originalPrompt = vi.fn(async (request: PromptRequestLike, _signal?: AbortSignal) => {
     const text = String((request.content[0] as { text?: string } | undefined)?.text ?? "");
     if (request.requestId === "request-1") {
@@ -319,8 +324,12 @@ describe("fallbacks", () => {
     expectPassthrough(await run({ agents: false }));
   });
 
-  it("预设没挂 compaction 引擎时原样放行", async () => {
-    expectPassthrough(await run({ compaction: false }));
+  it("预设没登记压缩桥时原样放行，并留一条 warn", async () => {
+    const harness = await run({ bridge: false });
+    expectPassthrough(harness);
+    expect(harness.warn).toHaveBeenCalledWith(
+      expect.stringContaining("exposes no compaction bridge"),
+    );
   });
 
   it("缺 tokenMeter 时原样放行", async () => {
