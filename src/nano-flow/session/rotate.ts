@@ -292,8 +292,8 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
     signal: AbortSignal,
     text: string,
     stage: string,
-  ): Promise<void> => {
-    if (waitForTurnEnd === undefined || original === undefined) return;
+  ): Promise<boolean> => {
+    if (waitForTurnEnd === undefined || original === undefined) return false;
     const gate = new AbortController();
     const waiting = {
       sessionId: session.id,
@@ -315,12 +315,14 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
       if (accepted.accepted === false) {
         gate.abort();
         services.logger.warn(`nano-flow: rotation ${stage} turn was not accepted`);
-        return;
+        return false;
       }
       await settled;
+      return true;
     } catch (error) {
       gate.abort();
       services.logger.warn(`nano-flow: rotation ${stage} turn failed: ${describeError(error)}`);
+      return false;
     }
   };
 
@@ -353,7 +355,13 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
     if (used < window * settings().rotateAt) return fallback();
     if (rotating.has(session.id)) return fallback();
     const rotation = targetOf(session.id);
-    if (rotation === undefined) return fallback();
+    if (rotation === undefined) {
+      // 过阈值却没有压缩引擎（预设没挂、或作用域里取不到）：静默不轮转会让上下文一路涨，留一条痕。
+      services.logger.warn(
+        `nano-flow: rotation skipped for "${session.id}": this preset exposes no compaction engine`,
+      );
+      return fallback();
+    }
     // 正在跑的回合不能压缩：idle 引擎与「当前那一步之后要用的历史」都要求轮次边界。
     const events = eventsOf(session);
     if (!turnClosed(events)) return fallback();
@@ -362,8 +370,10 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
 
     rotating.add(session.id);
     try {
-      await runInjectedTurn(session, request, signal, PRE_COMPACT_PROMPT, "pre-compact");
-      await compactNow(rotation, signal);
+      // 前一步没跑完（超时/注入被拒）时轮次还在，压缩必然 busy：直接跳过，别制造一次假失败。
+      if (await runInjectedTurn(session, request, signal, PRE_COMPACT_PROMPT, "pre-compact")) {
+        await compactNow(rotation, signal);
+      }
       await runInjectedTurn(session, request, signal, POST_COMPACT_PROMPT, "post-compact");
     } finally {
       rotating.delete(session.id);

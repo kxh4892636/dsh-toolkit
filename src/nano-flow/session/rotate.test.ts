@@ -256,13 +256,14 @@ describe("rotation flow", () => {
     expect(harness.waitForTurnEnd.mock.calls[0]?.[0]).toMatchObject({ afterTurn: 2 });
   });
 
-  it("压缩前那一轮失败时只 warn，仍压缩并放行", async () => {
+  it("压缩前那一轮没跑完时跳过压缩，仍放行用户消息", async () => {
     const harness = makeHarness({ failInjectAt: 0 });
     harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
     await harness.send();
-    expect(harness.steps).toEqual(["inject:pre", "compact", "inject:post", "waited:post", "user"]);
+    expect(harness.steps).toEqual(["inject:pre", "inject:post", "waited:post", "user"]);
     expect(harness.warn).toHaveBeenCalled();
-    expect(harness.engine.compactNow).toHaveBeenCalledTimes(1);
+    // 轮次还在跑，压缩只会拿到 busy；不制造这一次假失败。
+    expect(harness.engine.compactNow).not.toHaveBeenCalled();
   });
 
   it("压缩后那一轮失败时只 warn，仍放行用户消息", async () => {
@@ -273,12 +274,13 @@ describe("rotation flow", () => {
     expect(harness.warn).toHaveBeenCalled();
   });
 
-  it("等待超时时只 warn 并继续往下", async () => {
+  it("等待超时时只 warn，跳过压缩继续往下", async () => {
     const harness = makeHarness({ timeoutAt: 0 });
     harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
     await harness.send();
-    expect(harness.steps).toEqual(["inject:pre", "compact", "inject:post", "waited:post", "user"]);
+    expect(harness.steps).toEqual(["inject:pre", "inject:post", "waited:post", "user"]);
     expect(harness.warn).toHaveBeenCalledWith(expect.stringContaining("pre-compact"));
+    expect(harness.engine.compactNow).not.toHaveBeenCalled();
   });
 
   it("compactNow 报 busy 时只 warn 并放行", async () => {
