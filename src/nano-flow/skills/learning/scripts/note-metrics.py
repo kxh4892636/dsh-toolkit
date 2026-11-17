@@ -5,7 +5,6 @@
     python3 note-metrics.py <目录或文件>... [--detail] [--json] [--exclude <路径子串>]
 
 口径与 SKILL.md 一致:
-    - 每篇行数: 整份 Markdown 的行数;
     - 条目字数: 列表条目去掉 `- ` 后的字符数;
     - 每节条数: 每个 H2 之下的列表条目数;
     - 参考值固定写在本文件，改动需同步 SKILL.md。
@@ -21,9 +20,8 @@ import re
 import sys
 import unicodedata
 
-# SKILL.md 里的分布数值；这里是唯一实现，脚本与文档要保持一致。
+# SKILL.md 里的条目与每节分布数值；这里是唯一实现，脚本与文档要保持一致。
 REFERENCE = {
-    "lines": {"mean": 50.7, "p50": 48.0, "p90": 93.0, "p95": 110.0, "max": 149},
     "bullet": {"mean": 33.3, "p50": 29.0, "p90": 56.0, "p95": 69.0, "over60": 7.9},
     "section": {"mean": 3.5, "p50": 3.0, "p90": 6.0, "over8": 2.2},
 }
@@ -63,7 +61,7 @@ def collect_files(targets: list[str], excludes: list[str]) -> tuple[list[str], l
 
 
 def read_note(file: str) -> dict:
-    """解析一份笔记: 行数、条目字数、每节条数。"""
+    """解析一份笔记: 条目字数、每节条数。"""
     with open(file, encoding="utf-8") as handle:
         rows = handle.read().split("\n")
     if rows and rows[-1] == "":
@@ -98,7 +96,7 @@ def read_note(file: str) -> dict:
     if current is not None:
         sections.append(current)
 
-    return {"file": file, "lines": len(rows), "bullet": bullets, "section": sections}
+    return {"file": file, "bullet": bullets, "section": sections}
 
 
 def quantile(values: list[float], percent: float) -> float:
@@ -121,8 +119,7 @@ def percent(count: int, total: int) -> float:
 
 
 def summarize(notes: list[dict]) -> dict:
-    """汇总为三组分布。"""
-    lines = [note["lines"] for note in notes]
+    """汇总为两组分布。"""
     bullets = [value for note in notes for value in note["bullet"]]
     sections = [value for note in notes for value in note["section"]]
     rnd = lambda value: round(value, 1)  # noqa: E731
@@ -130,13 +127,6 @@ def summarize(notes: list[dict]) -> dict:
         "files": len(notes),
         "bulletCount": len(bullets),
         "sectionCount": len(sections),
-        "lines": {
-            "mean": rnd(mean(lines)),
-            "p50": rnd(quantile(lines, 50)),
-            "p90": rnd(quantile(lines, 90)),
-            "p95": rnd(quantile(lines, 95)),
-            "max": max(lines) if lines else 0,
-        },
         "bullet": {
             "mean": rnd(mean(bullets)),
             "p50": rnd(quantile(bullets, 50)),
@@ -156,11 +146,6 @@ def summarize(notes: list[dict]) -> dict:
 def rows(summary: dict) -> list[list[str]]:
     one = lambda value: f"{value:.1f}"  # noqa: E731
     return [
-        ["每篇行数", "均值", one(REFERENCE["lines"]["mean"]), one(summary["lines"]["mean"])],
-        ["", "P50", one(REFERENCE["lines"]["p50"]), one(summary["lines"]["p50"])],
-        ["", "P90", one(REFERENCE["lines"]["p90"]), one(summary["lines"]["p90"])],
-        ["", "P95", one(REFERENCE["lines"]["p95"]), one(summary["lines"]["p95"])],
-        ["", "最长", str(REFERENCE["lines"]["max"]), str(summary["lines"]["max"])],
         ["条目字数", "均值", one(REFERENCE["bullet"]["mean"]), one(summary["bullet"]["mean"])],
         ["", "P50", one(REFERENCE["bullet"]["p50"]), one(summary["bullet"]["p50"])],
         ["", "P90", one(REFERENCE["bullet"]["p90"]), one(summary["bullet"]["p90"])],
@@ -232,15 +217,16 @@ def main(argv: list[str]) -> int:
         payload = {"summary": summary}
         if detail:
             payload["notes"] = [
-                {"file": note["file"], "lines": note["lines"], "sections": len(note["section"])} for note in notes
+                {"file": note["file"], "bullets": len(note["bullet"]), "sections": len(note["section"])}
+                for note in notes
             ]
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         return 0
     sys.stdout.write(render(summary) + "\n")
     if detail:
-        sys.stdout.write("\n逐篇现状（行数 / 小节数）\n")
-        for note in sorted(notes, key=lambda item: item["lines"], reverse=True):
-            sys.stdout.write(f"{note['lines']:>4} / {len(note['section']):>3}  {note['file']}\n")
+        sys.stdout.write("\n逐篇现状（小节数 / 条目数）\n")
+        for note in sorted(notes, key=lambda item: len(item["section"]), reverse=True):
+            sys.stdout.write(f"{len(note['section']):>3} / {len(note['bullet']):>3}  {note['file']}\n")
     return 0
 
 
