@@ -96,7 +96,7 @@ describe("client plugin entry", () => {
     toolkitClientState.reset();
   });
 
-  it("installs the recalled-row hiding next to the seat registrations", () => {
+  it("installs the recalled-row hiding without claiming any slot", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("{}", { status: 500 })),
@@ -114,13 +114,12 @@ describe("client plugin entry", () => {
       uiConversation: { events },
     });
     apply(ctx);
-    // 座位注册同一处：先抢 user 格（priority -1），再装 definition。
-    expect(injections).toContain("conversation.chat.node");
-    expect(registrations.at(-1)?.options).toMatchObject({
-      name: "conversation.chat.node",
-      key: "user",
-      priority: -1,
-    });
+    // 只装 definition：用户行靠宿主的 messageDefinition 走同一层隐藏，不再抢座位
+    // （抢座位会把宿主 user 行的装饰子槽换成空链，消息来源等装饰会掉）。
+    expect(injections).not.toContain("conversation.chat.node");
+    expect(registrations.map((entry) => entry.options)).not.toContainEqual(
+      expect.objectContaining({ key: "user" }),
+    );
     expect(registered).toEqual(["toolkit-recall"]);
     expect(effects).toContain("toolkit: recall hiding");
   });

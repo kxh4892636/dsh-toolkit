@@ -145,7 +145,7 @@ export const undoTurn = async (
   // 清队列会写 inbox 事件、甚至开一轮；落笔前按最新表面重算切点。
   const resolved = resolveTarget(deps, sessionId);
   assertAnchor(resolved, anchor);
-  const recall = recallOf(resolved.session, resolved.target);
+  const recall = recallOf(sessionId, resolved.session, resolved.target);
   const appended = resolved.session.append!("system/message", recall.data, recall.opts);
   await flush(deps, resolved.session);
   return {
@@ -252,8 +252,13 @@ const messageIdOf = (data: unknown): string | undefined => {
  *
  * `turn`/`step` 只是让这一行通过 v4 准入（正整数）：墓碑没有自己的轮次语义，
  * 借用被撤回那条消息所在轮的坐标，推不出来时退回 1。
+ * `sessionId` 写进 `data.recall`：seq 每个会话都从 0 开始，客户端靠它隔离区间。
+ * @param sessionId - 墓碑所属会话。
+ * @param session - 存活会话。
+ * @param target - 已校验的撤回目标。
+ * @returns 墓碑的 data、表面写入项与切点。
  */
-const recallOf = (session: RecallSession, target: UndoTarget): RecallPlan => {
+const recallOf = (sessionId: string, session: RecallSession, target: UndoTarget): RecallPlan => {
   const nodes = session.surface.nodes;
   const boundary = target.boundarySeq;
   const start = nodes.indexOf(boundary);
@@ -270,7 +275,7 @@ const recallOf = (session: RecallSession, target: UndoTarget): RecallPlan => {
     data: {
       turn,
       step,
-      recall: { boundary, end },
+      recall: { sessionId, boundary, end },
       message: {
         id: `recall-${seq}-${boundary}`,
         role: "system",

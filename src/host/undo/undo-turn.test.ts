@@ -211,7 +211,7 @@ describe("undoTurn", () => {
     expect(tombstone?.data).toMatchObject({
       turn: 2,
       step: 1,
-      recall: { boundary: 4, end: 4 },
+      recall: { sessionId: "session-source", boundary: 4, end: 4 },
       message: {
         id: "recall-5-4",
         role: "system",
@@ -243,7 +243,11 @@ describe("undoTurn", () => {
       surfaceOp: { op: "replace", startSeq: 5, endSeq: 7 },
       sourceEventSeqs: [5, 6, 7],
     });
-    expect(session.appended[0]?.data["recall"]).toEqual({ boundary: 5, end: 7 });
+    expect(session.appended[0]?.data["recall"]).toEqual({
+      sessionId: "session-source",
+      boundary: 5,
+      end: 7,
+    });
   });
 
   it("flushes the session once after writing the tombstone", async () => {

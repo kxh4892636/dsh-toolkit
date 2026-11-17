@@ -1,6 +1,4 @@
 // @vitest-environment happy-dom
-import { cleanup, render, screen } from "@testing-library/react";
-import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type {
   ClientContext,
@@ -20,9 +18,13 @@ import {
   recordRecalledRange,
   RECALL_DEFINITION_KIND,
   resetRecalledRanges,
-  UserRecallNodeView,
+  setActiveSession,
   wrapAllDefinitions,
 } from "./recall-hide.js";
+
+/** 两个会话：seq 各自从 0 开始，区间必须互不影响。 */
+const SESSION_A = "session-a";
+const SESSION_B = "session-b";
 
 /** 宿主聊天 Definition 的最小形状；buildViewNode 返回给定节点。 */
 const chatDefinition = (
@@ -41,11 +43,14 @@ const chatDefinition = (
 const fakeEvents = (definitions: readonly ConversationDefinitionLike[]) => {
   const registered: ConversationDefinitionLike[] = [...definitions];
   const listeners = new Set<() => void>();
+  /** 每次 register 调用（含重装配）都记一行，用来观察重注册次数。 */
+  const log: string[] = [];
   const notify = (): void => {
     for (const listener of listeners) listener();
   };
   const events: ConversationEventsLike = {
     register: (definition) => {
+      log.push(definition.kind);
       registered.push(definition);
       notify();
       return () => {
@@ -60,7 +65,7 @@ const fakeEvents = (definitions: readonly ConversationDefinitionLike[]) => {
       return () => listeners.delete(listener);
     },
   };
-  return { events, registered, listeners };
+  return { events, registered, listeners, log };
 };
 
 /** 装配 fake 的 ctx.slots，并记录注册过的选项。 */
@@ -108,42 +113,43 @@ const userNode = (seq: number, text = "被撤回的一轮"): ConversationViewNod
 });
 
 afterEach(() => {
-  cleanup();
   resetRecalledRanges();
   vi.restoreAllMocks();
 });
 
 describe("recalled ranges", () => {
   it("records a range once and reports whether it was new", () => {
-    expect(recordRecalledRange(10, 20)).toBe(true);
-    expect(recordRecalledRange(10, 20)).toBe(false);
-    expect(recalledRanges()).toEqual([{ boundary: 10, end: 20 }]);
+    expect(recordRecalledRange(SESSION_A, 10, 20)).toBe(true);
+    expect(recordRecalledRange(SESSION_A, 10, 20)).toBe(false);
+    expect(recalledRanges()).toEqual([{ sessionId: SESSION_A, boundary: 10, end: 20 }]);
   });
 
   it("keeps ranges sorted and rejects malformed ones", () => {
-    recordRecalledRange(30, 40);
-    recordRecalledRange(10, 12);
+    recordRecalledRange(SESSION_A, 30, 40);
+    recordRecalledRange(SESSION_A, 10, 12);
     expect(recalledRanges()).toEqual([
-      { boundary: 10, end: 12 },
-      { boundary: 30, end: 40 },
+      { sessionId: SESSION_A, boundary: 10, end: 12 },
+      { sessionId: SESSION_A, boundary: 30, end: 40 },
     ]);
-    expect(recordRecalledRange(20, 10)).toBe(false);
-    expect(recordRecalledRange(Number.NaN, 10)).toBe(false);
+    expect(recordRecalledRange(SESSION_A, 20, 10)).toBe(false);
+    expect(recordRecalledRange(SESSION_A, Number.NaN, 10)).toBe(false);
     expect(recalledRanges()).toHaveLength(2);
   });
 
   it("extends a range that shares its boundary instead of adding a second one", () => {
     // 乐观更新用墓碑自己的 seq，落地事件给的是精确结尾：同一个切点只留一段。
-    recordRecalledRange(10, 21);
-    expect(recordRecalledRange(10, 20)).toBe(false);
-    expect(recalledRanges()).toEqual([{ boundary: 10, end: 21 }]);
+    setActiveSession(SESSION_A);
+    recordRecalledRange(SESSION_A, 10, 21);
+    expect(recordRecalledRange(SESSION_A, 10, 20)).toBe(false);
+    expect(recalledRanges()).toEqual([{ sessionId: SESSION_A, boundary: 10, end: 21 }]);
     expect(isRecalledSeq(20)).toBe(true);
-    expect(recordRecalledRange(10, 30)).toBe(true);
-    expect(recalledRanges()).toEqual([{ boundary: 10, end: 30 }]);
+    expect(recordRecalledRange(SESSION_A, 10, 30)).toBe(true);
+    expect(recalledRanges()).toEqual([{ sessionId: SESSION_A, boundary: 10, end: 30 }]);
   });
 
   it("matches both endpoints and nothing outside them", () => {
-    recordRecalledRange(10, 20);
+    setActiveSession(SESSION_A);
+    recordRecalledRange(SESSION_A, 10, 20);
     expect(isRecalledSeq(9)).toBe(false);
     expect(isRecalledSeq(10)).toBe(true);
     expect(isRecalledSeq(15)).toBe(true);
@@ -152,26 +158,77 @@ describe("recalled ranges", () => {
   });
 
   it("treats non-numeric anchors as not recalled", () => {
-    recordRecalledRange(10, 20);
+    setActiveSession(SESSION_A);
+    recordRecalledRange(SESSION_A, 10, 20);
     expect(isRecalledSeq(undefined)).toBe(false);
     expect(isRecalledSeq("15")).toBe(false);
     expect(isRecalledSeq(Number.NaN)).toBe(false);
   });
 
+  it("keeps every session's ranges apart", () => {
+    // 缺陷回归：A 撤过 [100,200]，B 里同样 seq 的行不能被一起藏掉。
+    setActiveSession(SESSION_A);
+    recordRecalledRange(SESSION_A, 100, 200);
+    expect(isRecalledSeq(150)).toBe(true);
+
+    setActiveSession(SESSION_B);
+    recordRecalledRange(SESSION_B, 100, 120);
+    expect(isRecalledSeq(150)).toBe(false);
+    expect(isRecalledSeq(120)).toBe(true);
+    // 同一 seq 在两个会话里各有一段，互不合并。
+    expect(recalledRanges()).toEqual([
+      { sessionId: SESSION_A, boundary: 100, end: 200 },
+      { sessionId: SESSION_B, boundary: 100, end: 120 },
+    ]);
+
+    setActiveSession(SESSION_A);
+    expect(isRecalledSeq(150)).toBe(true);
+    expect(isRecalledSeq(120)).toBe(true);
+  });
+
+  it("hides nothing while the active session is unknown", () => {
+    // 还没人告诉我们正在看哪个会话：宁可先不隐藏，也不跨会话乱藏。
+    recordRecalledRange(SESSION_A, 10, 20);
+    expect(isRecalledSeq(15)).toBe(false);
+    setActiveSession(SESSION_A);
+    expect(isRecalledSeq(15)).toBe(true);
+  });
+
   it("asks for a rebuild only when a range is new", async () => {
-    const { events, registered } = fakeEvents([
+    const { events, registered, log } = fakeEvents([
       chatDefinition("input-message", () => userNode(12)),
     ]);
     const { slots } = fakeSlots();
     const hiding = installRecallHiding(fakeContext({ uiConversation: { events } }, slots));
     expect(hiding).toBeDefined();
     const before = registered.length;
-    expect(hideRecalledRange(10, 20)).toBe(true);
-    expect(hideRecalledRange(10, 20)).toBe(false);
+    const registeredBefore = log.length;
+    expect(hideRecalledRange(SESSION_A, 10, 20)).toBe(true);
+    expect(hideRecalledRange(SESSION_A, 10, 20)).toBe(false);
     // 重装配 = 注销并重新注册一次 definition，同一轮只做一次。
     await Promise.resolve();
     expect(registered).toHaveLength(before);
+    expect(log).toHaveLength(registeredBefore + 1);
     expect(registered.map((definition) => definition.kind)).toContain(RECALL_DEFINITION_KIND);
+    hiding?.dispose();
+  });
+
+  it("asks for a rebuild when the active session changes", async () => {
+    const { events, log } = fakeEvents([]);
+    const { slots } = fakeSlots();
+    const hiding = installRecallHiding(fakeContext({ uiConversation: { events } }, slots));
+    const registeredBefore = log.length;
+    // 同一个会话再设一次不做事。
+    setActiveSession(SESSION_A);
+    await Promise.resolve();
+    expect(log).toHaveLength(registeredBefore + 1);
+    setActiveSession(SESSION_A);
+    await Promise.resolve();
+    expect(log).toHaveLength(registeredBefore + 1);
+    // 真的切会话：再重注册一次，旧会话的区间随即不再命中。
+    setActiveSession(SESSION_B);
+    await Promise.resolve();
+    expect(log).toHaveLength(registeredBefore + 2);
     hiding?.dispose();
   });
 });
@@ -181,10 +238,13 @@ describe("recall tombstones", () => {
     const match = recallDefinition.match({
       type: "system/message",
       seq: 31,
-      data: { recall: { boundary: 10, end: 30 }, message: { id: "recall-31-10" } },
+      data: {
+        recall: { sessionId: SESSION_A, boundary: 10, end: 30 },
+        message: { id: "recall-31-10" },
+      },
     });
     expect(match).toEqual({ id: "31", role: "start" });
-    expect(recalledRanges()).toEqual([{ boundary: 10, end: 30 }]);
+    expect(recalledRanges()).toEqual([{ sessionId: SESSION_A, boundary: 10, end: 30 }]);
   });
 
   it("ignores other events and malformed marks", () => {
@@ -194,7 +254,15 @@ describe("recall tombstones", () => {
       recallDefinition.match({
         type: "system/message",
         seq: 5,
-        data: { recall: { boundary: "10", end: 30 } },
+        data: { recall: { sessionId: SESSION_A, boundary: "10", end: 30 } },
+      }),
+    ).toBeNull();
+    // 没有会话 id 的墓碑无法隔离，一并不收。
+    expect(
+      recallDefinition.match({
+        type: "system/message",
+        seq: 6,
+        data: { recall: { boundary: 10, end: 30 } },
       }),
     ).toBeNull();
     expect(recalledRanges()).toEqual([]);
@@ -206,17 +274,22 @@ describe("recall tombstones", () => {
     const state = recallDefinition.start(
       { key: "k", kind: RECALL_DEFINITION_KIND, id: "31", state: undefined },
       {
-        event: { type: "system/message", seq: 31, data: { recall: { boundary: 10, end: 30 } } },
+        event: {
+          type: "system/message",
+          seq: 31,
+          data: { recall: { sessionId: SESSION_A, boundary: 10, end: 30 } },
+        },
         role: "start",
       },
     );
-    expect(state).toEqual({ boundary: 10, end: 30 });
+    expect(state).toEqual({ sessionId: SESSION_A, boundary: 10, end: 30 });
   });
 });
 
 describe("definition-level hiding", () => {
   it("marks a node inside a recalled range hidden and keeps its identity", () => {
-    recordRecalledRange(10, 20);
+    setActiveSession(SESSION_A);
+    recordRecalledRange(SESSION_A, 10, 20);
     const node = userNode(15);
     const hidden = hideRecalledNode(node);
     expect(hidden).toEqual({ ...node, visibility: "hidden" });
@@ -225,13 +298,25 @@ describe("definition-level hiding", () => {
   });
 
   it("leaves nodes outside every range untouched", () => {
-    recordRecalledRange(10, 20);
+    setActiveSession(SESSION_A);
+    recordRecalledRange(SESSION_A, 10, 20);
     const node = userNode(21);
     expect(hideRecalledNode(node)).toBe(node);
   });
 
+  it("leaves a user row from another session visible", () => {
+    // 缺陷回归的第二层：定义层改写也必须按会话判断。
+    recordRecalledRange(SESSION_A, 100, 200);
+    setActiveSession(SESSION_B);
+    const node = userNode(150);
+    expect(hideRecalledNode(node)).toBe(node);
+    setActiveSession(SESSION_A);
+    expect(hideRecalledNode(node).visibility).toBe("hidden");
+  });
+
   it("hides assistant rows through their final message seq", () => {
-    recordRecalledRange(10, 20);
+    setActiveSession(SESSION_A);
+    recordRecalledRange(SESSION_A, 10, 20);
     const node: ConversationViewNodeLike = {
       key: "assistant-step:1:1",
       kind: "assistant-step",
@@ -244,7 +329,8 @@ describe("definition-level hiding", () => {
   });
 
   it("wraps chat definitions only and does not double-wrap", () => {
-    recordRecalledRange(10, 20);
+    setActiveSession(SESSION_A);
+    recordRecalledRange(SESSION_A, 10, 20);
     const chat = chatDefinition("input-message", () => userNode(12));
     const other = {
       ...chatDefinition("trajectory-row", () => userNode(12)),
@@ -262,104 +348,14 @@ describe("definition-level hiding", () => {
   });
 
   it("keeps a null build result as null instead of inventing a node", () => {
-    recordRecalledRange(10, 20);
+    setActiveSession(SESSION_A);
+    recordRecalledRange(SESSION_A, 10, 20);
     const chat = chatDefinition("input-message", () => null);
     const { events } = fakeEvents([chat]);
     wrapAllDefinitions(events);
     expect(
       chat.buildViewNode?.({ key: "k", kind: chat.kind, id: "i", state: undefined }),
     ).toBeNull();
-  });
-});
-
-describe("user seat takeover", () => {
-  it("renders nothing for a recalled user row", () => {
-    recordRecalledRange(10, 20);
-    expect(UserRecallNodeView({ node: userNode(12) })).toBeNull();
-  });
-
-  it("delegates to the host user component and forwards its props", () => {
-    const seen: Record<string, unknown>[] = [];
-    const Host = (props: Record<string, unknown>): unknown => {
-      seen.push(props);
-      return createElement("div", { "data-testid": "host-user" }, "宿主气泡");
-    };
-    const { slots } = fakeSlots([
-      { options: { id: "other", key: "assistant-step" }, component: () => null },
-      { options: { key: "user" }, component: Host },
-    ]);
-    const hiding = installRecallHiding(
-      fakeContext({ uiConversation: { events: fakeEvents([]).events } }, slots),
-    );
-    expect(hiding).toBeDefined();
-    render(createElement(UserRecallNodeView, { node: userNode(12), t: () => "x" }));
-    expect(screen.getByTestId("host-user")).toBeDefined();
-    expect(seen).toHaveLength(1);
-    expect(seen[0]?.["node"]).toMatchObject({ kind: "user" });
-    // 宿主的 user 行要用装饰链渲染来源；本条目声明不了那个子槽，补一条空链。
-    const chain = seen[0]?.["renderSlotChain"] as (() => unknown) | undefined;
-    expect(typeof chain).toBe("function");
-    expect(chain?.()).toBeNull();
-    hiding?.dispose();
-  });
-
-  it("keeps a host-provided slot chain untouched", () => {
-    const seen: Record<string, unknown>[] = [];
-    const Host = (props: Record<string, unknown>): unknown => {
-      seen.push(props);
-      return null;
-    };
-    const { slots } = fakeSlots([{ options: { key: "user" }, component: Host }]);
-    const hiding = installRecallHiding(
-      fakeContext({ uiConversation: { events: fakeEvents([]).events } }, slots),
-    );
-    const chain = (): string => "host-chain";
-    render(createElement(UserRecallNodeView, { node: userNode(12), renderSlotChain: chain }));
-    expect(seen[0]?.["renderSlotChain"]).toBe(chain);
-    hiding?.dispose();
-  });
-
-  it("falls back to a self-drawn bubble when the host component is missing", () => {
-    const { slots } = fakeSlots([]);
-    const hiding = installRecallHiding(
-      fakeContext({ uiConversation: { events: fakeEvents([]).events } }, slots),
-    );
-    render(createElement(UserRecallNodeView, { node: userNode(12, "降级文本") }));
-    expect(screen.getByText("降级文本")).toBeDefined();
-    hiding?.dispose();
-  });
-
-  it("claims the user cell at priority -1 with the chat dictionary", () => {
-    const { slots, registrations } = fakeSlots();
-    const hiding = installRecallHiding(
-      fakeContext({ uiConversation: { events: fakeEvents([]).events } }, slots),
-    );
-    expect(registrations[0]).toMatchObject({
-      name: "conversation.chat.node",
-      key: "user",
-      priority: -1,
-      locale: "chat",
-    });
-    hiding?.dispose();
-  });
-
-  it("survives a lost seat and keeps the definition-level hide", () => {
-    const { slots, registrations } = fakeSlots();
-    const failing: ClientContext["slots"] = {
-      ...slots,
-      register: (options) => {
-        registrations.push(options);
-        throw new Error("keyed slot already has an entry for key user at priority -1");
-      },
-    };
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const hiding = installRecallHiding(
-      fakeContext({ uiConversation: { events: fakeEvents([]).events } }, failing),
-    );
-    expect(hiding).toBeDefined();
-    expect(registrations).toHaveLength(1);
-    expect(warn).toHaveBeenCalled();
-    hiding?.dispose();
   });
 });
 
@@ -370,11 +366,23 @@ describe("installRecallHiding", () => {
     expect(registrations).toHaveLength(0);
   });
 
+  it("never claims a slot: user rows hide through the definition layer", () => {
+    const { slots, registrations, injected } = fakeSlots();
+    const hiding = installRecallHiding(
+      fakeContext({ uiConversation: { events: fakeEvents([]).events } }, slots),
+    );
+    expect(hiding).toBeDefined();
+    expect(registrations).toHaveLength(0);
+    expect(injected).toEqual([]);
+    hiding?.dispose();
+  });
+
   it("wraps definitions that appear after installation", () => {
     const { events } = fakeEvents([]);
     const { slots } = fakeSlots();
     const hiding = installRecallHiding(fakeContext({ uiConversation: { events } }, slots));
-    recordRecalledRange(10, 20);
+    setActiveSession(SESSION_A);
+    recordRecalledRange(SESSION_A, 10, 20);
     const late = chatDefinition("turn-tail", () => ({
       ...userNode(18),
       kind: "turn-tail",
@@ -386,7 +394,7 @@ describe("installRecallHiding", () => {
     hiding?.dispose();
   });
 
-  it("disposes its definition, subscription and seat", () => {
+  it("disposes its definition and subscription", () => {
     const { events, registered, listeners } = fakeEvents([]);
     const { slots } = fakeSlots();
     const hiding = installRecallHiding(fakeContext({ uiConversation: { events } }, slots));

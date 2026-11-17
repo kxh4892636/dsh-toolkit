@@ -104,7 +104,7 @@ session.append(
 - `shadowed`:当前表面从 `boundary` 到 `end` 的全部节点,必须逐个写进 `sourceEventSeqs`(宿主会校验,漏一个就拒写).
 - 空内容的 `system/message` 不投影出任何消息,所以替换之后模型看到的历史正好停在上一轮结束;替换本身是日志里的一行,重启后可重放.
 - 撤回前先清掉该会话排队中的输入(`sessionController.state` 读出,逐条 `updateQueue({action:{kind:"remove"}})`):否则那条待发消息会立刻开一轮,把刚遮蔽的历史重新长出来. 宿主不暴露队列能力时只记一条 warn,撤回照常进行.
-- 界面同步:客户端半读出墓碑里的 `data.recall`,把 `boundary..end` 区间的聊天行置 `visibility:"hidden"`(宿主的 `isVisibleChatNode` 按这个字段过滤),用户的提问行由同 key 的 seat 接管后直接不渲染. 点确认后先用响应里的 `{boundary, seq}` 乐观隐藏,不等墓碑事件回流.
+- 界面同步:客户端半读出墓碑里的 `data.recall`(含 `sessionId`),把**当前会话**里 `boundary..end` 区间的聊天行置 `visibility:"hidden"`(宿主的 `isVisibleChatNode` 按这个字段过滤;用户提问行也走同一条定义层通道). 区间按会话隔离,所以在 A 会话撤回不会影响 B 会话的行. 点确认后先用响应里的 `{boundary, seq}` 乐观隐藏,不等墓碑事件回流.
 
 ### 边界(不做的事)
 

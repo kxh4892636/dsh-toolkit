@@ -81,7 +81,8 @@ describe("UndoButton", () => {
     // 会话不再切换：行由本地区间表藏掉，原文回到同一个会话的输入框。
     await waitFor(() => expect(setDraft).toHaveBeenCalledWith("上一轮的输入"));
     expect(persistDraft).toHaveBeenCalled();
-    expect(recalledRanges()).toEqual([{ boundary: 10, end: 20 }]);
+    // 区间带上会话：别的会话里同样 seq 的行不会被一起藏掉。
+    expect(recalledRanges()).toEqual([{ sessionId: "session-source", boundary: 10, end: 20 }]);
   });
 
   it("keeps the modal open while busy and closes it after the undo", async () => {
@@ -98,7 +99,9 @@ describe("UndoButton", () => {
     await waitFor(() => expect(button).toHaveProperty("disabled", false));
     fireEvent.click(button);
     fireEvent.click(within(screen.getByRole("dialog")).getByText("撤回"));
-    await waitFor(() => expect(recalledRanges()).toEqual([{ boundary: 3, end: 4 }]));
+    await waitFor(() =>
+      expect(recalledRanges()).toEqual([{ sessionId: "session-source", boundary: 3, end: 4 }]),
+    );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 

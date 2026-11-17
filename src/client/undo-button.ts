@@ -11,7 +11,7 @@ import { clientService, hasMethod, type ClientContext } from "./contract.js";
 import { ConfirmModal } from "./confirm-modal.js";
 import { fetchUndoAvailability, HostApiError, runUndoTurn } from "./host-api.js";
 import { dropDraft, peekDraft, rememberDraft, takeDraft } from "./draft-restore.js";
-import { hideRecalledRange } from "./recall-hide.js";
+import { hideRecalledRange, setActiveSession } from "./recall-hide.js";
 import { toolkitClientState } from "./state.js";
 import { ensureToolkitStyles } from "./stylesheet.js";
 
@@ -62,6 +62,9 @@ const UndoIcon: FC = () => {
  * 行从对话里消失是客户端的事（见 `recall-hide.ts`），会话 id 不变、不换会话。
  */
 export const UndoButton: FC<UndoButtonProps> = (props) => {
+  // 每次渲染都把「正在看的会话」同步给区间表：seq 每个会话都从 0 开始，
+  // 不知道会话就不隐藏（见 recall-hide.ts 的 isRecalledSeq）。切换会话时这里触发一次重装配。
+  setActiveSession(props.sessionId);
   const tools = useSyncExternalStore(
     (listener: () => void) => toolkitClientState.subscribe(listener),
     () => toolkitClientState.getSnapshot(),
@@ -184,7 +187,7 @@ const applyUndone = (
   result: UndoTurnResponse,
   inputActions: UndoButtonProps["inputActions"],
 ): void => {
-  hideRecalledRange(result.boundary, result.seq);
+  hideRecalledRange(sessionId, result.boundary, result.seq);
   if (result.prompt === "") return;
   const setDraft = inputActions?.setDraft;
   if (typeof setDraft === "function") {

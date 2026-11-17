@@ -43,9 +43,12 @@ export interface UndoTurnResponse {
 /**
  * 就地撤回墓碑事件（`system/message`）的 `data.recall` 形状。
  *
- * 客户端半据此把 `boundary..end` 之间的行隐藏；宿主半写入时两个数都来自当前表面。
+ * 客户端半据此把 `boundary..end` 之间的行隐藏，且只在这个会话里隐藏
+ * （seq 每个会话都从 0 开始）；宿主半写入时两个数都来自当前表面。
  */
 export interface UndoRecallMark {
+  /** 墓碑所属会话：客户端据此把区间隔离到该会话。 */
+  readonly sessionId: string;
   readonly boundary: number;
   readonly end: number;
 }
