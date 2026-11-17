@@ -17,12 +17,31 @@ describe("nano-flow preset", () => {
     expect(preset.order).toBe(2);
   });
 
-  it("挂载本包的第二个入口，且不挂压缩", () => {
+  it("挂载本包的第二个入口，压缩只挂 basic 且不开自动压缩", () => {
     const names = preset.plugins.map((row) => row.name);
+    const nested = preset.plugins.flatMap((row) =>
+      Array.isArray(row.config)
+        ? (row.config as { name: string }[]).map((child) => child.name)
+        : [],
+    );
     expect(names).toContain("file:///tmp/nano-flow.mjs");
-    expect(names.some((name) => name.includes("compaction"))).toBe(false);
+    // 轮转要手动触发 compactNow：引擎必须在，`/compact` 命令与自动压缩都不在。
+    expect(nested).toContain("@deepseek-ai/dsh-compaction-basic");
+    expect(names).not.toContain("@deepseek-ai/dsh-command-compact");
+    expect(nested).not.toContain("@deepseek-ai/dsh-command-compact");
     expect(names.some((name) => name.includes("tool-todo"))).toBe(false);
     expect(names.some((name) => name.includes("plan-mode"))).toBe(false);
+  });
+
+  it("压缩引擎挂在 isolate 过 compaction 的 group 里，且 auto 为 false", () => {
+    const group = preset.plugins.find((row) => row.id === "compaction");
+    expect(group?.group).toBe(true);
+    expect(group?.name).toBe("cordis:group");
+    expect(group?.isolate).toEqual({ compaction: true });
+    const children = group?.config as { id: string; name: string; config?: unknown }[];
+    expect(children.map((row) => row.id)).toEqual(["compaction-basic"]);
+    expect(children[0]?.name).toBe("@deepseek-ai/dsh-compaction-basic");
+    expect(children[0]?.config).toEqual({ auto: false });
   });
 
   it("挂载定时任务工具，供 dream 任务创建", () => {

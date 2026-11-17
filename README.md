@@ -180,23 +180,34 @@ metadata:
   按「Plan + 会话」记游标于 `$DSH_HOME/toolkit/nano-flow-dream.json`），只输出新 turn；
   dream 处理后跑 check 并 commit，成功后用同工具的 `mark` 推进游标。五 pass 写回领域文档与 `GUIDE.md`。互链写在页面文末
   `## 相关` 段（`- [链接](相对.md) — 原因`），check 校验目标与原因。
-- 预设不挂载压缩插件。轮转挂在**宿主半**：用户每发一条**排队**消息（queue）时，先按会话 id
-  找到存活会话，再用日志里最后一条 `agent-preset/selected` 判断它是否跑 Nano Flow（live header
-  的 `agentPreset` 在恢复会话时不可靠），然后读 `tokenMeter.contextPressure` 的
-  `projectedTokens ?? pressureTokens`。达到 `rotateAt × contextWindow` 时**不换会话**：把表面节点
-  `nodes[1..]` 整体换成一条 seed 消息 —— 先追加 `compaction/prune` 记下遮蔽区间与逐节点计价，
-  紧跟一条带 `surfaceOp.replace` 的 `user/message`，再 `sessions.flush()` 落盘。日志只追加不删，
-  会话 id 不变，所以同一会话上的子 agent、后台 job 与 Plan 绑定原样存活，客户端不需要跟随跳转。
-- seed 五段：固定首句、恢复当前 Plan（已绑定则注明「无需再 `nano_flow_bind`」）、只读报告
-  `spec.md` 与 `notes_index.md`、自动 `nano_flow_check` 的结论、最末是上一轮模型输出的
-  `<reset-last-output>` 块（保尾截断到 8 KB）。被遮蔽的旧历史不会回到模型视野，重启、fork、
-  导出同样看不到；所以每轮结束前必须把检查点写回磁盘：spec 的进度与恢复入口、note 的 status / next_step。
-- 两道闸：只在上一轮已 `turn/end` 后动表面（mid-turn 遮蔽会抽掉当前步要用的历史）；一次重置后
-  必须已产出过新的 assistant 消息才允许再次重置，避免同一占用反复重置。轮转只能自动触发，
+- 预设挂 `@deepseek-ai/dsh-compaction-basic`（`auto: false`，且**不挂** `dsh-command-compact`）：
+  没有 `/compact` 命令，也不按步或按模型切换自动压缩。轮转只在压力达阈值时手动调一次
+  `agent.ctx.get('compaction').compactNow(agent, signal)`，由宿主的压缩引擎摘要旧历史 ——
+  插件自己不再维护上下文。
+- 轮转挂在**宿主半**：用户每发一条**排队**消息（queue）时，先按会话 id 找到存活会话与 agent，
+  再用日志里最后一条 `agent-preset/selected` 判断它是否跑 Nano Flow（live header 的
+  `agentPreset` 在恢复会话时不可靠），然后读 `tokenMeter.contextPressure` 的
+  `projectedTokens ?? pressureTokens`。达到 `rotateAt × contextWindow` 时，用户那条消息先扣住，
+  串行跑四步：
+  1. 注入一轮 `prompt`：「更新当前 Plan 的 `spec.md` 与 note（进度、证据、下一步）」，等这一轮结束；
+  2. `compactNow(agent, signal)`：引擎内部自己 `sessions.flush`，写 `compaction/start|summary|end`
+     与一条 `compact-checkpoint` 替换消息；手动路径只保留最后一个 surface 节点，其余全部摘要化；
+  3. 再注入一轮：「读取 `spec.md` 与 `notes_index.md`，然后执行 `nano_flow_check`」，等这一轮结束；
+  4. 放行用户原来那条消息。
+     注入走的是包装前的真实 `prompt`（换一个新 `requestId`），所以不会再进本闸门，也不改写用户原文。
+     会话 id 与日志都不变，子 agent、后台 job 与 Plan 绑定原样存活，客户端不需要跟随跳转。
+- 「这一轮跑完了」由宿主半的 seam 判定：`src/index.ts` 订阅 `session/event`，等该会话下一个
+  `turn/end`（10 分钟超时）。缺这个 seam、缺 `agents` 服务、或预设里没有 `compaction` 引擎时，
+  轮转不介入、原样放行（与「缺 tokenMeter 就放行」同风格）。
+- 失败策略：第 1、3 步抛错或超时只 warn，继续往下；第 2 步抛 `ManualCompactionError`
+  （如 `busy` —— agent 不在 idle 或会话有开着的 turn）同样只 warn，然后照常放行用户消息。
+  任何失败都不许把用户消息弄丢。
+- 两道闸：只在上一轮已 `turn/end` 后才动手（手动压缩要求 idle）；一次轮转之后要产出过新的
+  assistant 消息才允许再次轮转，避免压缩空转时每条消息都多跑两轮注入。轮转只能自动触发，
   没有手动命令。
 - 轮转不写在预设行里：预设行读不到 `ctx.agent`（cordis 对服务属性做 inject 守卫），而根插件
   又不能声明 `agent` 依赖（根上下文里没有 agent）。`nano-flow-mount.json` 的 `stages` 记录每一步，
-  挂载/轮转是否生效看这个文件即可。
+  挂载/轮转是否生效看这个文件即可（`rotation` 里记 tokenMeter / agents / sessionController 是否就位）。
 - `nano-flow/scripts/check-domain.mjs` 是唯一校验与索引生成实现，`nano_flow_check` 用
   `process.execPath` 调用它，并把当前设置作为 `--limits` 传入。
 
@@ -215,10 +226,11 @@ metadata:
 4. 在空工作区让模型建 domain、plan、note：出现 `CONTEXT-MAP.md`、域文档骨架、`GUIDE.md` 空模板、
    `spec.md`、`notes_index.md`；`nano_flow_check` 通过并列出更新的索引。
 5. 打开 toolkit 面板的"Nano Flow 设置"，改一个上限并保存；重启后值保持，下一次 check 生效。
-6. 把轮转阈值调到很低（如 0.05），再发一条排队消息：会话 id 不变、GUI 历史仍在，模型按 seed
-   开局只读 `spec.md` 与 `notes_index.md` 并报告进度；会话日志里恰好多出一条 `compaction/prune`
-   与紧邻的 `surfaceOp.replace`，下一条请求的 `usage.totalTokens` 回落到 seed 规模；重置前起的
-   子 agent 与后台 job 仍存活。
+6. 把轮转阈值调到很低（如 0.05），再发一条排队消息：用户那条消息先被扣住，会话里先跑一轮
+   「更新 spec 与 note」，随后日志多出 `compaction/start|summary|end` 与一条 `compact-checkpoint`
+   替换消息，再跑一轮「读回 spec 与 `notes_index.md` 并执行 `nano_flow_check`」，最后才轮到用户
+   消息；会话 id 不变、GUI 历史仍在，下一条请求的 `usage.totalTokens` 回落；轮转前起的子 agent
+   与后台 job 仍存活。
 7. 挂载诊断：`$DSH_HOME/toolkit/nano-flow-mount.json` 的 `stages` 应同时有 `entry`
    (`via: preset`)、`apply`、`ready` 与 `rotation`；缺哪个就说明哪一步没生效。
 8. 把一条 note 置 `blocked` 但不写 `reason`：`nano_flow_check` 报"缺少 reason"；补上后通过，

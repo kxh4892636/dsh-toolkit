@@ -9,17 +9,17 @@ import { createNanoFlowSettingsStore, nodeNanoFlowSettingsIo } from "./host/nano
 import { NANO_FLOW_SERVICE, type ToolkitNanoFlowFacade } from "./host/nano-flow-facade.js";
 import { createNanoFlowTool } from "./host/tools/nano-flow.js";
 import { applyNanoFlow } from "./nano-flow/assembly/plugin.js";
-import { assetsCheckScript, locateAssetsRoot } from "./nano-flow/session/assets.js";
-import { formatIssues, runCheck } from "./nano-flow/documents/check-runner.js";
-import { DEFAULT_DOMAIN_ROOT } from "./nano-flow/session/config.js";
 import { recordMount, restoreMountReport } from "./nano-flow/session/mount-report.js";
 import { buildNotesSnapshot } from "./nano-flow/planning/notes.js";
 import { NANO_FLOW_PRESET_ID, nanoFlowEntryUrl } from "./nano-flow/assembly/preset.js";
-import { createRotation, type RotationSession } from "./nano-flow/session/rotate.js";
+import {
+  createRotation,
+  type RotationSession,
+  type WaitForTurnEnd,
+} from "./nano-flow/session/rotate.js";
 import { createPlanLogService } from "./nano-flow/planning/plan-log-service.js";
 import {
   BINDINGS_FILE,
-  inheritedPlanDirectory,
   planRelativePath,
   pruneBindings,
   readBindings,
@@ -27,7 +27,6 @@ import {
   resolvePlanDirectory,
   writeBindings,
 } from "./nano-flow/planning/plan-log.js";
-import { planRefFromDirectory } from "./nano-flow/planning/plan.js";
 import { resolveWorkspace } from "./nano-flow/session/workspace.js";
 import { hostServices } from "./nano-flow/session/services.js";
 import { createNestedSkillTool } from "./host/tools/nested-skill.js";
@@ -192,61 +191,61 @@ export const apply = (ctx: Context, config: Config = {}): void => {
     });
     child.effect(() => disposeRoutes, "toolkit: routes");
   });
-  // 上下文重置挂在宿主层：预设行看不到 `ctx.agent`（cordis 的 inject 守卫），只能由这里按
-  // 会话日志里的预设选择判定，再包装 `sessionController.prompt`。重置在同一会话内遮蔽历史，
-  // 因此子 agent 与后台 job 不受影响。
+  // 上下文轮转挂在宿主层：预设行看不到 `ctx.agent`（cordis 的 inject 守卫），只能由这里按
+  // 会话日志里的预设选择判定，再包装 `sessionController.prompt`。触发时先注入一轮把检查点
+  // 写回磁盘，再让预设作用域里的压缩引擎摘要旧历史，然后注入一轮读回并校验，最后放行用户的
+  // 消息；压缩在会话内完成，因此子 agent、后台 job 与 Plan 绑定原样存活。
   ctx.inject(["sessionController"], (child: Context) => {
     child.effect(() => {
       /**
-       * 重置前自动跑一次校验（等价于执行 `nano_flow_check`）：校验领域文档，结论由重置
-       * 写进 seed。
+       * 等某会话的下一个 `turn/end`。
+       *
+       * 插件注入的那一轮走的是真实 `prompt`：准入即返回（只入 inbox），所以「这一轮跑完了」
+       * 只能由会话事件判定，宿主没有提供「某条消息跑完」的 promise。超时与取消都以 reject
+       * 表达，由轮转方按失败处理（只 warn，不阻断用户消息）。
        */
-      const autoCheck = async (params: {
-        sessionId: string;
-        workspace: string;
-      }): Promise<{ readonly text: string } | undefined> => {
-        const domainsPath = config.domainRoot ?? DEFAULT_DOMAIN_ROOT;
-        const result = await runCheck({
-          script: assetsCheckScript(locateAssetsRoot()),
-          workspace: params.workspace,
-          domainsPath,
-          limits: runtime.nanoFlow.get(),
+      const waitForTurnEnd: WaitForTurnEnd = ({ sessionId, signal, afterTurn, timeoutMs }) =>
+        new Promise<void>((resolve, reject) => {
+          let settled = false;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          let unsubscribe: () => void = () => {};
+          const finish = (error?: unknown): void => {
+            if (settled) return;
+            settled = true;
+            if (timer !== undefined) clearTimeout(timer);
+            signal.removeEventListener("abort", onAbort);
+            unsubscribe();
+            if (error === undefined) resolve();
+            else reject(error);
+          };
+          function onAbort(): void {
+            finish(signal.reason ?? new Error("rotation wait aborted"));
+          }
+          timer = setTimeout(
+            () => finish(new Error(`no turn/end within ${timeoutMs} ms`)),
+            timeoutMs,
+          );
+          unsubscribe = child.on(
+            "session/event",
+            (session: unknown, event: unknown) => {
+              if ((session as { id?: unknown } | null)?.id !== sessionId) return;
+              if ((event as { type?: unknown } | null)?.type !== "turn/end") return;
+              // 只认注入之后那一轮：更早的轮次结束时开跑压缩会撞上 busy。
+              const turn = (event as { data?: { turn?: unknown } } | null)?.data?.turn;
+              if (afterTurn !== undefined && typeof turn === "number" && turn <= afterTurn) return;
+              finish();
+            },
+            { global: true },
+          ) as () => void;
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
         });
-        const lines: string[] = [];
-        if (result.ok) {
-          lines.push("重置前自动执行 `nano_flow_check`：领域文档校验通过，索引已刷新。");
-        } else {
-          lines.push(`重置前自动执行 \`nano_flow_check\` 失败，共 ${result.errors.length} 项：`);
-          lines.push(formatIssues(result.errors.slice(0, 5)));
-          if (result.errors.length > 5)
-            lines.push(`…还有 ${result.errors.length - 5} 项，跑一次工具看全部。`);
-        }
-        return { text: lines.join("\n") };
-      };
-      /**
-       * 重置前读本会话的 Plan 绑定：同一会话内绑定不变，只写进 seed 的恢复行。
-       * @param params - 会话 id 与工作区根。
-       * @returns Plan 引用；没有绑定或目录失效时 undefined。
-       */
-      const boundPlan = async (params: {
-        sessionId: string;
-        workspace: string;
-      }): Promise<string | undefined> => {
-        const directory = inheritedPlanDirectory(
-          await readBindings(bindingsFilePath(config)),
-          params.sessionId,
-          params.workspace,
-          (candidate) => existsSync(candidate),
-        );
-        return directory === undefined ? undefined : planRefFromDirectory(directory);
-      };
+
       const rotation = createRotation({
         services: hostServices(child),
         config: { presetId: NANO_FLOW_PRESET_ID },
-        domainRoot: config.domainRoot ?? DEFAULT_DOMAIN_ROOT,
         settings: () => runtime.nanoFlow.get(),
-        autoCheck,
-        boundPlan,
+        waitForTurnEnd,
         sessionOf: (sessionId: string) => {
           const sessions = serviceOf<HostSessionStore>(child, "sessions");
           const session = sessions?.get(sessionId);
@@ -256,9 +255,9 @@ export const apply = (ctx: Context, config: Config = {}): void => {
       const disposeRotation = rotation.attach();
       recordMount("rotation", {
         tokenMeter: serviceOf<object>(child, "tokenMeter") !== undefined,
-        sessions: serviceOf<object>(child, "sessions") !== undefined,
-        workspaceRegistry: serviceOf<object>(child, "workspaceRegistry") !== undefined,
-        workingDirectory: serviceOf<object>(child, "workingDirectory") !== undefined,
+        agents: serviceOf<object>(child, "agents") !== undefined,
+        sessionController: serviceOf<object>(child, "sessionController") !== undefined,
+        waitForTurnEnd: true,
       });
       return disposeRotation;
     }, "toolkit: nano-flow rotation");

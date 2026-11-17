@@ -3,13 +3,11 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { DEFAULT_NANO_FLOW_SETTINGS } from "../../contract.js";
 import {
   createRotation,
-  LAST_OUTPUT_TAG,
-  lastAssistantText,
+  POST_COMPACT_PROMPT,
+  PRE_COMPACT_PROMPT,
   selectedPreset,
-  truncateTail,
   type PromptRequestLike,
   type RotationSession,
-  type SurfaceSession,
 } from "./rotate.js";
 import type { HostServices } from "./services.js";
 
@@ -21,130 +19,143 @@ type Pressure = {
 
 type EventLike = { type: string; seq?: number; data?: unknown };
 
-type Appended = { type: string; data: Record<string, unknown>; opts?: Record<string, unknown> };
-
 const signal = new AbortController().signal;
 
-/** 一轮事件：turn/start + 若干 assistant 消息 + turn/end。 */
-const turnEvents = (
-  turn: number,
-  messages: readonly (readonly { type: string; text?: string }[])[],
-  from = 1,
-): readonly EventLike[] => {
-  const events: EventLike[] = [{ type: "turn/start", seq: from, data: { turn } }];
-  for (const content of messages) {
-    events.push({
-      type: "assistant/message",
-      seq: from + events.length,
-      data: { turn, message: { content } },
-    });
-  }
-  events.push({
-    type: "turn/end",
-    seq: from + events.length,
-    data: { turn, reason: { kind: "completed" } },
-  });
-  return events;
-};
+/** 一轮事件：turn/start + 一条 assistant 消息 + turn/end。 */
+const turnEvents = (from: number, turn: number): readonly EventLike[] => [
+  { type: "turn/start", seq: from, data: { turn } },
+  { type: "assistant/message", seq: from + 1, data: { turn } },
+  { type: "turn/end", seq: from + 2, data: { turn, reason: { kind: "completed" } } },
+];
 
-/** 可写会话：表面固定为「系统提示 + 两条消息」，append 记账并推进表面与日志。 */
+/** 可写会话：日志只追加，snapshot 直接读它。 */
 const makeSession = (
   options: {
     id?: string;
     preset?: string;
     header?: RotationSession["header"];
     events?: readonly EventLike[];
-    surfaceNodes?: readonly number[];
-    failAppend?: boolean;
   } = {},
-): SurfaceSession & { appended: Appended[]; nodes: number[]; log: EventLike[] } => {
-  const nodes = [...(options.surfaceNodes ?? [1, 3, 5])];
-  const appended: Appended[] = [];
+): RotationSession & { log: EventLike[] } => {
   const log: EventLike[] = [
     { type: "agent-preset/selected", seq: 0, data: { agentPreset: options.preset ?? "nano-flow" } },
     ...(options.events ?? []),
   ];
-  let next = 100;
   return {
     id: options.id ?? "session-1",
-    header: { cwd: "C:\\work", ...options.header },
-    appended,
-    nodes,
+    header: { cwd: "/work", ...options.header },
     log,
-    surface: {
-      get nodes() {
-        return [...nodes];
-      },
-    },
-    append: (type: string, data: unknown, opts?: unknown) => {
-      if (options.failAppend === true) throw new Error("append rejected");
-      const seq = next;
-      next += 1;
-      appended.push({
-        type,
-        data: data as Record<string, unknown>,
-        ...(opts === undefined ? {} : { opts: opts as Record<string, unknown> }),
-      });
-      nodes.push(seq);
-      log.push({ type, seq, data });
-      return { seq };
-    },
     snapshotEvents: () => log,
   };
 };
 
+/** 一次等待：由注入的那一轮「跑完」来 resolve，取消时 reject 并出队。 */
+type Pending = { resolve: () => void; reject: (error: unknown) => void };
+
 const makeHarness = (
   options: {
-    autoCheck?: (params: {
-      sessionId: string;
-      workspace: string;
-    }) => Promise<{ readonly text: string } | undefined>;
-    boundPlan?: (params: { sessionId: string; workspace: string }) => Promise<string | undefined>;
     session?: ReturnType<typeof makeSession>;
+    meter?: boolean;
+    agents?: boolean;
+    compaction?: boolean;
+    seam?: boolean;
+    /** 注入第几轮时 throw：0 = 压缩前，1 = 压缩后。 */
+    failInjectAt?: number;
+    /** 第几次等待直接 reject（超时）：0 = 压缩前，1 = 压缩后。 */
+    timeoutAt?: number;
+    /** compactNow 抛出的错误。 */
+    compactError?: unknown;
   } = {},
 ) => {
-  let pressure: Pressure = { pressureTokens: 10, contextWindow: 1000 };
   const session = options.session ?? makeSession();
-  const others = new Map<string, RotationSession>([
-    [session.id, session],
-    ["session-other", makeSession({ id: "session-other", preset: "standard" })],
-  ]);
-  const originalPrompt = vi.fn(async (_request: PromptRequestLike, _signal?: AbortSignal) => ({
-    accepted: true,
-  }));
-  const flush = vi.fn(async () => true);
+  /** 四步的执行顺序，测试的主断言。 */
+  const steps: string[] = [];
+  let pressure: Pressure = { pressureTokens: 10, contextWindow: 1000 };
+  let seq = 1000;
+  let injected = 0;
+  let waits = 0;
+  const pending: Pending[] = [];
   const warn = vi.fn();
-  const controller = { prompt: originalPrompt };
+  const engine = {
+    compactNow: vi.fn(async () => {
+      steps.push("compact");
+      if (options.compactError !== undefined) throw options.compactError;
+      return null;
+    }),
+  };
+  const agent = {
+    id: session.id,
+    ctx: {
+      get: (name: string) =>
+        name === "compaction" && options.compaction !== false ? engine : undefined,
+    },
+  };
+  const originalPrompt = vi.fn(async (request: PromptRequestLike, _signal?: AbortSignal) => {
+    const text = String((request.content[0] as { text?: string } | undefined)?.text ?? "");
+    if (request.requestId === "request-1") {
+      steps.push("user");
+      return { accepted: true };
+    }
+    const stage = text === PRE_COMPACT_PROMPT ? "pre" : "post";
+    steps.push(`inject:${stage}`);
+    if (options.failInjectAt === injected) {
+      injected += 1;
+      throw new Error(`${stage} turn rejected`);
+    }
+    injected += 1;
+    // 模拟宿主：这一轮真的跑起来并结束。
+    for (const event of turnEvents(seq, injected)) session.log.push({ ...event });
+    seq += 3;
+    const waiter = pending.shift();
+    waiter?.resolve();
+    if (waiter !== undefined) steps.push(`waited:${stage}`);
+    return { accepted: true };
+  });
+  const waitForTurnEnd = vi.fn(
+    ({ signal: outer }: { sessionId: string; signal: AbortSignal; timeoutMs: number }) => {
+      const index = waits;
+      waits += 1;
+      if (options.timeoutAt === index) return Promise.reject(new Error("wait timed out"));
+      return new Promise<void>((resolve, reject) => {
+        const entry: Pending = {
+          resolve: () => {
+            drop();
+            resolve();
+          },
+          reject: (error: unknown) => {
+            drop();
+            reject(error);
+          },
+        };
+        const drop = (): void => {
+          const at = pending.indexOf(entry);
+          if (at >= 0) pending.splice(at, 1);
+        };
+        pending.push(entry);
+        outer.addEventListener("abort", () => entry.reject(new Error("aborted")), { once: true });
+      });
+    },
+  );
   const services = {
     get: (name: string) => {
-      if (name === "tokenMeter") {
-        return {
-          contextPressure: () => pressure,
-          measure: () => ({
-            // 路由价（tokens）与固定启发式价（heuristicTokens）故意不同：
-            // 遮蔽价协议要求后者，用错会折叠出对不上的上下文面积。
-            nodes: session.surface.nodes.map((seq) => ({
-              seq,
-              tokens: 100,
-              heuristicTokens: 40,
-            })),
-          }),
-        };
+      if (name === "tokenMeter" && options.meter !== false) {
+        return { contextPressure: () => pressure };
       }
       if (name === "sessionController") return controller;
-      if (name === "sessions") return { flush };
+      if (name === "agents" && options.agents !== false) {
+        return { get: (id: string) => (id === session.id ? agent : undefined) };
+      }
       return undefined;
     },
     logger: { warn },
   } as unknown as HostServices;
+  const controller = { prompt: originalPrompt };
   const rotation = createRotation({
     services,
     config: { presetId: "nano-flow" },
-    domainRoot: ".agents/domains",
     settings: () => ({ ...DEFAULT_NANO_FLOW_SETTINGS, rotateAt: 0.618 }),
-    sessionOf: (id) => others.get(id),
-    ...(options.autoCheck === undefined ? {} : { autoCheck: options.autoCheck }),
-    ...(options.boundPlan === undefined ? {} : { boundPlan: options.boundPlan }),
+    sessionOf: (id) => (id === session.id ? session : undefined),
+    ...(options.seam === false ? {} : { waitForTurnEnd }),
   });
   const dispose = rotation.attach();
   const request = (overrides: Partial<PromptRequestLike> = {}): PromptRequestLike => ({
@@ -158,10 +169,12 @@ const makeHarness = (
     controller.prompt(request(overrides), signal);
   return {
     controller,
-    session,
     originalPrompt,
-    flush,
+    session,
+    steps,
+    engine,
     warn,
+    waitForTurnEnd,
     dispose,
     send,
     setPressure: (next: Pressure) => (pressure = next),
@@ -171,11 +184,8 @@ const makeHarness = (
 const textsOf = (request: PromptRequestLike | undefined): readonly string[] =>
   (request?.content ?? []).map((block) => String(block["text"]));
 
-/** 重置时注入的 seed 文本。 */
-const seedText = (session: { appended: Appended[] }): string => {
-  const blocks = session.appended[1]?.data["content"] as { text?: string }[] | undefined;
-  return String(blocks?.[0]?.text ?? "");
-};
+/** 一次完整轮转的四步顺序。 */
+const FULL_FLOW = ["inject:pre", "waited:pre", "compact", "inject:post", "waited:post", "user"];
 
 describe("selectedPreset", () => {
   it("以日志里最后一条预设选择为准，而不是 live header", () => {
@@ -196,211 +206,181 @@ describe("selectedPreset", () => {
   });
 });
 
-describe("lastAssistantText", () => {
-  it("取最后一个已结束轮里最后一条含文本的 assistant 消息", () => {
+describe("two fixed prompts", () => {
+  it("压缩前写回检查点，压缩后读回并校验", () => {
+    expect(PRE_COMPACT_PROMPT).toContain("spec.md");
+    expect(PRE_COMPACT_PROMPT).toContain("note");
+    expect(PRE_COMPACT_PROMPT).toContain("下一步");
+    expect(POST_COMPACT_PROMPT).toContain("spec.md");
+    expect(POST_COMPACT_PROMPT).toContain("notes_index.md");
+    expect(POST_COMPACT_PROMPT).toContain("nano_flow_check");
+  });
+});
+
+describe("rotation flow", () => {
+  it("触发时串行四步，用户消息最后才放行", async () => {
+    const harness = makeHarness();
+    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    await harness.send();
+    expect(harness.steps).toEqual(FULL_FLOW);
+    // 两次注入都换新 requestId，继承原会话，不改用户那条消息。
+    const calls = harness.originalPrompt.mock.calls;
+    const injectedRequests = [calls[0]?.[0], calls[1]?.[0]];
+    expect(injectedRequests.map(textsOf)).toEqual([[PRE_COMPACT_PROMPT], [POST_COMPACT_PROMPT]]);
+    expect(injectedRequests.map((req) => req?.requestId)).not.toContain("request-1");
+    expect(injectedRequests.map((req) => req?.sessionId)).toEqual(["session-1", "session-1"]);
+    // 用户消息原样发出，没有被改写。
+    expect(textsOf(calls[2]?.[0])).toEqual(["用户消息"]);
+    // compactNow 拿到该会话的 agent 与这一次请求的信号。
+    expect(harness.engine.compactNow).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "session-1" }),
+      signal,
+    );
+    // 这个夹具没有任何轮次，所以不带轮号下限。
+    expect(harness.waitForTurnEnd.mock.calls[0]?.[0]).not.toHaveProperty("afterTurn");
+    expect(harness.warn).not.toHaveBeenCalled();
+  });
+
+  it("等待带上的轮号下限是注入前的最大轮号", async () => {
     const session = makeSession({
       events: [
-        ...turnEvents(1, [[{ type: "text", text: "第一轮结论" }]]),
-        ...turnEvents(2, [
-          [{ type: "reasoning", text: "内部推理" }],
-          [{ type: "text", text: "第二轮中间文本" }],
-          [{ type: "text", text: "第二轮最终答复" }],
-        ]),
+        { type: "turn/start", seq: 1, data: { turn: 1 } },
+        { type: "turn/end", seq: 2, data: { turn: 1 } },
+        { type: "turn/start", seq: 3, data: { turn: 2 } },
+        { type: "turn/end", seq: 4, data: { turn: 2 } },
       ],
     });
-    expect(lastAssistantText(session)).toBe("第二轮最终答复");
-  });
-
-  it("没有已结束轮或没有文本时为 undefined", () => {
-    expect(lastAssistantText(makeSession())).toBeUndefined();
-    const pendingOnly = makeSession({
-      events: [{ type: "turn/start", seq: 1, data: { turn: 1 } }],
-    });
-    expect(lastAssistantText(pendingOnly)).toBeUndefined();
-  });
-
-  it("超长输出保尾并标注截断字节数", () => {
-    const long = "甲".repeat(5000);
-    const clipped = lastAssistantText(
-      makeSession({ events: turnEvents(1, [[{ type: "text", text: long }]]) }),
-    );
-    expect(clipped).toBeDefined();
-    expect(String(clipped).startsWith("…（前 ")).toBe(true);
-    expect(String(clipped).endsWith("甲")).toBe(true);
-    expect(String(clipped)).not.toContain("\uFFFD");
-  });
-});
-
-describe("truncateTail", () => {
-  it("未超过上限时原样返回", () => {
-    expect(truncateTail("短文本", 100)).toBe("短文本");
-  });
-
-  it("超过上限时保留尾部", () => {
-    const out = truncateTail("abcdef", 3);
-    expect(out.endsWith("def")).toBe(true);
-    expect(out).toContain("已截断");
-  });
-
-  it("多字节切口不残留替换字符", () => {
-    const out = truncateTail("甲".repeat(4000), 1000);
-    expect(out).not.toContain("\uFFFD");
-    expect(out).toContain("已截断");
-  });
-});
-
-describe("in-place reset", () => {
-  it("below the threshold: keeps the session history untouched", async () => {
-    const harness = makeHarness();
-    await harness.send();
-    expect(harness.session.appended).toHaveLength(0);
-    expect(harness.originalPrompt.mock.calls[0]?.[0].sessionId).toBe("session-1");
-  });
-
-  it("at the threshold: shadows the surface and injects the seed, same session id", async () => {
-    const harness = makeHarness();
-    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
-    await harness.send();
-    expect(harness.session.appended.map((item) => item.type)).toEqual([
-      "compaction/prune",
-      "user/message",
-    ]);
-    const [prune, seed] = harness.session.appended;
-    // nodes[0] 是系统提示（seq 1），只能从第二个节点开始遮蔽。
-    expect(prune?.data["shadowedRange"]).toEqual({ start: 3, end: 5 });
-    expect(prune?.data["shadowedSeqs"]).toEqual([3, 5]);
-    // 两个被遮蔽节点按固定启发式价计（40 × 2），不是路由价（100 × 2）。
-    expect(prune?.data["shadowedTokenCount"]).toBe(80);
-    expect(seed?.opts).toMatchObject({
-      surfaceOp: { op: "replace", startSeq: 3, endSeq: 5 },
-      sourceEventSeqs: [3, 5],
-    });
-    expect(harness.flush).toHaveBeenCalledTimes(1);
-    const sent = harness.originalPrompt.mock.calls[0]?.[0];
-    expect(sent?.sessionId).toBe("session-1");
-    // 用户原文原样发出，不再包 <rotation-prior-input>。
-    expect(textsOf(sent)).toEqual(["用户消息"]);
-    expect(String((seed?.data["content"] as { text?: string }[] | undefined)?.[0]?.text)).toContain(
-      "报告进度与可推进队列",
-    );
-  });
-
-  it("keeps the last turn's output block inside the seed", async () => {
-    const session = makeSession({
-      events: turnEvents(1, [[{ type: "text", text: "上一轮结论" }]]),
-    });
     const harness = makeHarness({ session });
-    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    harness.setPressure({ projectedTokens: 900, contextWindow: 1000 });
     await harness.send();
-    const seed = seedText(harness.session);
-    expect(seed).toContain(`<${LAST_OUTPUT_TAG}>`);
-    expect(seed).toContain("上一轮结论");
-    expect(seed.trimEnd().endsWith(`</${LAST_OUTPUT_TAG}>`)).toBe(true);
+    expect(harness.waitForTurnEnd.mock.calls[0]?.[0]).toMatchObject({ afterTurn: 2 });
   });
 
-  it("resets only once per produced assistant message", async () => {
+  it("压缩前那一轮失败时只 warn，仍压缩并放行", async () => {
+    const harness = makeHarness({ failInjectAt: 0 });
+    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    await harness.send();
+    expect(harness.steps).toEqual(["inject:pre", "compact", "inject:post", "waited:post", "user"]);
+    expect(harness.warn).toHaveBeenCalled();
+    expect(harness.engine.compactNow).toHaveBeenCalledTimes(1);
+  });
+
+  it("压缩后那一轮失败时只 warn，仍放行用户消息", async () => {
+    const harness = makeHarness({ failInjectAt: 1 });
+    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    await harness.send();
+    expect(harness.steps).toEqual(["inject:pre", "waited:pre", "compact", "inject:post", "user"]);
+    expect(harness.warn).toHaveBeenCalled();
+  });
+
+  it("等待超时时只 warn 并继续往下", async () => {
+    const harness = makeHarness({ timeoutAt: 0 });
+    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    await harness.send();
+    expect(harness.steps).toEqual(["inject:pre", "compact", "inject:post", "waited:post", "user"]);
+    expect(harness.warn).toHaveBeenCalledWith(expect.stringContaining("pre-compact"));
+  });
+
+  it("compactNow 报 busy 时只 warn 并放行", async () => {
+    const busy = Object.assign(new Error("manual compaction requires an idle agent"), {
+      name: "ManualCompactionError",
+      code: "busy",
+    });
+    const harness = makeHarness({ compactError: busy });
+    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    await harness.send();
+    expect(harness.steps).toEqual(FULL_FLOW);
+    expect(harness.warn).toHaveBeenCalledWith(expect.stringContaining("busy"));
+    expect(textsOf(harness.originalPrompt.mock.calls[2]?.[0])).toEqual(["用户消息"]);
+  });
+});
+
+describe("fallbacks", () => {
+  const run = async (options: Parameters<typeof makeHarness>[0]) => {
+    const harness = makeHarness(options);
+    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    await harness.send();
+    return harness;
+  };
+
+  const expectPassthrough = (harness: Awaited<ReturnType<typeof run>>) => {
+    expect(harness.steps).toEqual(["user"]);
+    expect(harness.engine.compactNow).not.toHaveBeenCalled();
+    expect(textsOf(harness.originalPrompt.mock.calls[0]?.[0])).toEqual(["用户消息"]);
+  };
+
+  it("缺等待 seam 时原样放行", async () => {
+    expectPassthrough(await run({ seam: false }));
+  });
+
+  it("缺 agents 服务时原样放行", async () => {
+    expectPassthrough(await run({ agents: false }));
+  });
+
+  it("预设没挂 compaction 引擎时原样放行", async () => {
+    expectPassthrough(await run({ compaction: false }));
+  });
+
+  it("缺 tokenMeter 时原样放行", async () => {
+    expectPassthrough(await run({ meter: false }));
+  });
+
+  it("不到阈值时不介入", async () => {
     const harness = makeHarness();
-    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
     await harness.send();
-    await harness.send();
-    expect(harness.session.appended).toHaveLength(2);
-    // 新产出 assistant 消息后才允许下一次重置。
-    harness.session.log.push({ type: "assistant/message", seq: 200, data: {} });
-    await harness.send();
-    expect(harness.session.appended).toHaveLength(4);
+    expect(harness.steps).toEqual(["user"]);
+    expect(harness.waitForTurnEnd).not.toHaveBeenCalled();
   });
 
-  it("skips subagent sessions, other presets, steer prompts and unknown sessions", async () => {
-    const subagent = makeSession({ header: { origin: "subagent" } });
-    const sub = makeHarness({ session: subagent });
-    sub.setPressure({ projectedTokens: 700, contextWindow: 1000 });
-    await sub.send();
-    const other = makeHarness();
-    other.setPressure({ projectedTokens: 700, contextWindow: 1000 });
-    await other.send({ sessionId: "session-other" });
-    const regular = makeHarness();
-    regular.setPressure({ projectedTokens: 700, contextWindow: 1000 });
-    await regular.send({ mode: "steer" });
-    await regular.send({ sessionId: "session-unknown" });
-    expect(sub.session.appended).toHaveLength(0);
-    expect(other.session.appended).toHaveLength(0);
-    expect(regular.session.appended).toHaveLength(0);
-    expect(regular.originalPrompt).toHaveBeenCalledTimes(2);
-  });
-
-  it("waits for the running turn to end", async () => {
+  it("上一轮未结束时不动", async () => {
     const session = makeSession({ events: [{ type: "turn/start", seq: 1, data: { turn: 1 } }] });
     const harness = makeHarness({ session });
     harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
     await harness.send();
-    expect(harness.session.appended).toHaveLength(0);
+    expect(harness.steps).toEqual(["user"]);
+    expect(harness.engine.compactNow).not.toHaveBeenCalled();
   });
 
-  it("leaves a surface with only the system prompt alone", async () => {
-    const session = makeSession({ surfaceNodes: [7] });
-    const harness = makeHarness({ session });
+  it("跳过子 agent、其他预设、steer 与未知会话", async () => {
+    const sub = makeHarness({ session: makeSession({ header: { origin: "subagent" } }) });
+    sub.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    await sub.send();
+    const other = makeHarness({ session: makeSession({ preset: "standard" }) });
+    other.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    await other.send();
+    const steer = makeHarness();
+    steer.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    await steer.send({ mode: "steer" });
+    await steer.send({ sessionId: "session-unknown" });
+    expect(sub.steps).toEqual(["user"]);
+    expect(other.steps).toEqual(["user"]);
+    expect(steer.steps).toEqual(["user", "user"]);
+  });
+
+  it("同一会话的并发轮转只跑一次", async () => {
+    const harness = makeHarness();
+    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    await Promise.all([harness.send(), harness.send()]);
+    expect(harness.steps.filter((step) => step === "compact")).toHaveLength(1);
+  });
+
+  it("轮转后要产出新的 assistant 输出才允许再轮转", async () => {
+    const harness = makeHarness();
     harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
     await harness.send();
-    expect(harness.session.appended).toHaveLength(0);
-    expect(harness.originalPrompt).toHaveBeenCalledTimes(1);
-  });
-
-  it("falls back to the plain prompt when the session rejects the append", async () => {
-    const session = makeSession({ failAppend: true });
-    const harness = makeHarness({ session });
-    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    const afterFirst = harness.steps.length;
     await harness.send();
-    expect(harness.warn).toHaveBeenCalled();
-    expect(textsOf(harness.originalPrompt.mock.calls[0]?.[0])).toEqual(["用户消息"]);
+    expect(harness.steps.slice(afterFirst)).toEqual(["user"]);
+    harness.session.log.push({ type: "assistant/message", seq: 5000, data: {} });
+    await harness.send();
+    expect(harness.steps.slice(afterFirst + 1)).toEqual(FULL_FLOW);
   });
 
-  it("restores the original prompt on dispose", () => {
+  it("dispose 还原原始 prompt", () => {
     const harness = makeHarness();
     const wrapped = harness.controller.prompt;
+    expect(wrapped).not.toBe(harness.originalPrompt);
     harness.dispose();
     expect(harness.controller.prompt).toBe(harness.originalPrompt);
-    expect(harness.controller.prompt).not.toBe(wrapped);
-  });
-});
-
-describe("reset seed", () => {
-  const summary = "重置前自动执行 `nano_flow_check`：领域文档校验通过，索引已刷新。";
-
-  it("runs the check for this session and appends the result before the output block", async () => {
-    const autoCheck = vi.fn(async () => ({ text: summary }));
-    const session = makeSession({
-      events: turnEvents(1, [[{ type: "text", text: "上一轮结论" }]]),
-    });
-    const harness = makeHarness({ session, autoCheck });
-    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
-    await harness.send();
-    expect(autoCheck).toHaveBeenCalledWith({ sessionId: "session-1", workspace: "C:\\work" });
-    const seed = seedText(harness.session);
-    expect(seed.indexOf(summary)).toBeLessThan(seed.indexOf(`<${LAST_OUTPUT_TAG}>`));
-    expect(seed).toContain("报告进度与可推进队列");
-  });
-
-  it("names the bound plan and says no bind call is needed", async () => {
-    const boundPlan = vi.fn(async () => "dsh/active/2026-11-16-示例");
-    const harness = makeHarness({ boundPlan });
-    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
-    await harness.send();
-    expect(boundPlan).toHaveBeenCalledWith({ sessionId: "session-1", workspace: "C:\\work" });
-    const seed = seedText(harness.session);
-    expect(seed).toContain("恢复当前 Plan：dsh/active/2026-11-16-示例");
-    expect(seed).toContain("绑定未变");
-  });
-
-  it("keeps resetting when the check throws, and notes the failure", async () => {
-    const autoCheck = vi.fn(async () => {
-      throw new Error("node 挂了");
-    });
-    const harness = makeHarness({ autoCheck });
-    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
-    await harness.send();
-    const seed = seedText(harness.session);
-    expect(seed).toContain("nano_flow_check");
-    expect(seed).toContain("node 挂了");
-    expect(harness.warn).toHaveBeenCalled();
   });
 });

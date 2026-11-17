@@ -87,6 +87,23 @@ export const createNanoFlowPreset = (entryUrl: string): PresetDefinitionLike => 
     { id: "skill-filesystem", name: "@deepseek-ai/dsh-skill-filesystem" },
     { id: "tool-skill", name: "@deepseek-ai/dsh-tool-skill" },
     { id: "tool-schedule", name: "@deepseek-ai/dsh-tool-schedule" },
+    // 压缩引擎：轮转只在压力达阈值时调 `agent.ctx.get('compaction').compactNow()`，
+    // 由它自己摘要旧历史。`auto: false` 关掉按步/按模型切换的自动压缩，
+    // 不挂 `dsh-command-compact` 也就不暴露 `/compact`。
+    // 引擎挂在 isolate 过的 group 里：`compaction` 服务在预设作用域解析。
+    {
+      id: "compaction",
+      name: "cordis:group",
+      group: true,
+      isolate: { compaction: true },
+      config: [
+        {
+          id: "compaction-basic",
+          name: "@deepseek-ai/dsh-compaction-basic",
+          config: { auto: false },
+        },
+      ],
+    },
     { id: "nano-flow", name: entryUrl, config: { nanoFlowOnly: true } },
     {
       id: "delegation",
