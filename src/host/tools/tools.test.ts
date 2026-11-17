@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createNanoFlowTool } from "./nano-flow.js";
 import { createNestedSkillTool } from "./nested-skill.js";
 import { createOfficeSkillsTool } from "./office-skills.js";
-import { createUndoTurnTool } from "./undo-turn.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -98,16 +97,6 @@ describe("nano-flow tool", () => {
     expect(registered[0]?.plugins.some((row) => row.name === "file:///tmp/nano-flow.mjs")).toBe(
       true,
     );
-    dispose();
-  });
-});
-
-describe("undo-turn tool", () => {
-  it("declares the catalog entry without host state", () => {
-    const tool = createUndoTurnTool();
-    expect(tool).toMatchObject({ id: "undo-turn", defaultEnabled: false });
-    const dispose = tool.apply({} as never);
-    expect(dispose).toBeTypeOf("function");
     dispose();
   });
 });

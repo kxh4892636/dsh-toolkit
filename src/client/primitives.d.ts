@@ -6,19 +6,6 @@
  * 只声明本插件实际用到的成员；宿主有的一律用宿主组件，不自己画。
  */
 declare module "@deepseek-ai/dsh-client-ui-primitives" {
-  /** 自带 portal、焦点与背景处理的模态框。 */
-  export const Modal: import("react").ComponentType<{
-    open: boolean;
-    onClose: () => void;
-    title?: string;
-    closeLabel?: string;
-    description?: string;
-    children?: import("react").ReactNode;
-    footer?: import("react").ReactNode;
-    className?: string;
-    contentClassName?: string;
-  }>;
-
   /** 主题化按钮；`variant` 决定主次，`size` 决定高度。 */
   export const Button: import("react").ComponentType<{
     variant?: "ghost" | "outline" | "primary" | "danger";

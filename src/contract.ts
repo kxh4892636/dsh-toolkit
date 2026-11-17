@@ -1,5 +1,5 @@
 /**
- * 宿主半与客户端半共享的契约：工具目录、开关与撤销请求的形状。
+ * 宿主半与客户端半共享的契约：工具目录与开关的形状。
  * 客户端 bundle 直接内联本模块（相对导入会被打包），因此这里不得引入任何宿主依赖。
  */
 
@@ -22,37 +22,6 @@ export interface ToolkitStateRequest {
   readonly enabled: boolean;
 }
 
-/** 撤回可用性探测的响应；`prompt` 是被撤销那一轮的用户原文，供确认弹窗预览。 */
-export interface UndoAvailability {
-  readonly available: boolean;
-  /** 不可用原因：`no-previous-turn`、`session-not-live`、`tool-disabled` 等。 */
-  readonly reason?: string;
-  readonly prompt?: string;
-}
-
-/** `POST /api/toolkit/undo-turn` 的响应：撤回就地完成，会话 id 不变。 */
-export interface UndoTurnResponse {
-  /** 撤回切点：被撤回那条消息的 seq，也是墓碑 replace 区间的起点。 */
-  readonly boundary: number;
-  /** 墓碑事件自己的 seq（表面最后一个节点）。 */
-  readonly seq: number;
-  /** 被撤回那轮的用户原文，供客户端回填草稿。 */
-  readonly prompt: string;
-}
-
-/**
- * 就地撤回墓碑事件（`system/message`）的 `data.recall` 形状。
- *
- * 客户端半据此把 `boundary..end` 之间的行隐藏，且只在这个会话里隐藏
- * （seq 每个会话都从 0 开始）；宿主半写入时两个数都来自当前表面。
- */
-export interface UndoRecallMark {
-  /** 墓碑所属会话：客户端据此把区间隔离到该会话。 */
-  readonly sessionId: string;
-  readonly boundary: number;
-  readonly end: number;
-}
-
 /** 宿主路由的错误体；客户端据 `error` 选择本地化文案。 */
 export interface ToolkitErrorBody {
   readonly error: string;
@@ -61,17 +30,6 @@ export interface ToolkitErrorBody {
 
 /** 宿主工具目录路由（连接服务已鉴权，客户端用同源相对地址调用）。 */
 export const TOOLKIT_STATE_PATH = "/api/toolkit/state";
-
-/** 撤回工具路由：GET 探测可用性，POST 执行（就地墓碑，不换会话）。 */
-export const TOOLKIT_UNDO_PATH = "/api/toolkit/undo-turn";
-
-/** 已撤回（应隐藏）的会话 id：客户端启动时据此把残留行摘掉。 */
-export const TOOLKIT_HIDDEN_PATH = "/api/toolkit/hidden";
-
-/** `GET /api/toolkit/hidden` 的响应体。 */
-export interface ToolkitHiddenResponse {
-  readonly ids: readonly string[];
-}
 
 /**
  * Nano Flow 的数值上限与轮转阈值；由 toolkit 面板的设置区维护，
@@ -162,7 +120,6 @@ export const TOOLKIT_NANO_FLOW_NOTES_PATH = "/api/toolkit/nano-flow/notes";
 /** 工具 id；状态文件与面板都以此为键。 */
 export const TOOL_IDS = {
   nestedSkill: "nested-skill",
-  undoTurn: "undo-turn",
   officeSkills: "office-skills",
   nanoFlow: "nano-flow",
 } as const;

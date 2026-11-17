@@ -8,7 +8,6 @@
 | 工具 id         | 名称                      | 默认 | 作用                                                         |
 | --------------- | ------------------------- | ---- | ------------------------------------------------------------ |
 | `nested-skill`  | 嵌套 skill 发现           | 关   | 在 `.agents` 树内任意深度发现 `SKILL.md`(内建一层形态之外)   |
-| `undo-turn`     | 撤回                      | 关   | 在会话工具栏,模型选择左侧加"撤回"按钮,撤销最后一轮会话       |
 | `office-skills` | 移除 dsh 自带 office 技能 | 关   | 屏蔽宿主内置的 office / office-* 技能(provider `dsh-office`) |
 
 另有一个 **Agent 预设 `nano-flow`**(不是面板开关):安装本插件后预设选择器里多出"Nano Flow",
@@ -34,8 +33,6 @@ profile 的 `dsh.profile.bundles` 会多出本包及其 `cordis.patch.yml` 挂�
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 面板容器与行卡片 | 复刻设置页 `section / rows / rowCard / rowHead / rowName / rowTag / rowActions` 的度量:`--dsw-alias-settings-card-fill/-stroke`,`--dsw-radius-xl`,`0.5px` 描边,`12px 14px` 内边距 |
 | 工具开关         | 宿主 `@deepseek-ai/dsh-client-ui-primitives` 的 `Switch`(滑块自带 `--dsw-alias-switch-thumb`)                                                                                     |
-| 撤回触发器       | 复刻 `ui-permission-presets` 的 `.trigger` 度量与 `:hover`/`:disabled`/`focus-visible` 状态                                                                                       |
-| 撤回确认弹窗     | 宿主 `Modal` + `Button`,正文层级用本插件 token 类                                                                                                                                 |
 | 图标             | `currentColor` 描边 SVG,尺寸由 class 决定(与宿主 `.triggerIcon svg` 同规则)                                                                                                       |
 
 ## 工具一:嵌套 skill 发现
@@ -58,63 +55,7 @@ profile 的 `dsh.profile.bundles` 会多出本包及其 `cordis.patch.yml` 挂�
 `complete: false` 返回,注册表保留上一份结果而不是缓存它.关闭该工具会卸载 provider,
 嵌套 skill 立刻从目录里消失.
 
-## 工具二:撤回
-
-会话界面的 composer 工具栏中,模型选择器左侧出现"撤回"按钮:
-
-- 会话只有一轮(没有可回到的上一轮)时按钮置灰;正在跑一轮时也置灰(就地改写不能抽掉进行中那一步的历史).
-- 控件样式与 composer 的"权限选择"逐条一致(同样的字体/字号/颜色/hover),文字左侧带 14px 回转箭头,与模型选择器之间的 gap 收到 6px.
-- 确认弹窗外壳用宿主 `Modal`,动作用宿主 `Button`.
-- 点击弹出确认框(宿主原生确认对话框布局:标题/说明 + 原文预览 + 取消/确认),取消不改动任何状态.
-- 原文回填:确认后把该轮 `user/message` 的文本写回**同一会话**的 composer 草稿(`inputActions.setDraft` + `persistDraft()`);composer 尚未挂载时先登记为"待回填",由该会话自己的按钮或 1.5s 服务面兜底落地.
-- 可用性随会话轮次变化自动刷新,宿主尚未打开会话时会短暂重试,无需切换会话.
-- 确认后:清掉该会话排队中的输入 → 在**同一个会话**里追加一条墓碑 → 会话 id 不变:不换会话、不删会话、不动置顶位与工作区记账.
-
-### 就地撤回:一条墓碑遮蔽一段表面
-
-宿主的会话日志是**仅追加**的事件源记录(`@deepseek-ai/dsh-session`),但模型看到的历史是它的**表面**(`surfaceOp`):
-每个 `session.append` 都带 `surfaceOp`,要么 `"append"` 接在尾部,要么 `{op:"replace", startSeq, endSeq}` 把一段节点换成自己;
-`deriveMessages()`(下一次请求的模型输入)就是表面节点逐个投影出来的结果. 宿主没有删除/截断 API,`replace` 是唯一能让表面变短的手段.
-
-于是"撤回"= 往日志追加**一个**事件:
-
-```js
-session.append(
-  "system/message",
-  {
-    turn,
-    step, // v4 准入要求正整数,取被撤回那条消息所在的轮
-    recall: { boundary, end }, // 客户端半据此隐藏这几行
-    message: {
-      id: `recall-${seq}-${boundary}`,
-      role: "system",
-      source: { kind: "system-prompt" },
-      content: [],
-    },
-  },
-  {
-    surfaceOp: { op: "replace", startSeq: boundary, endSeq: end },
-    sourceEventSeqs: shadowed,
-  },
-);
-```
-
-- `boundary`:被撤回那一轮**第一条用户消息**的 seq(该轮没有用户文本时退回该轮第一条 assistant 消息);它必须仍是当前表面上的 `append` 节点,否则报 `no-previous-turn`.
-- `end`:当前表面最后一个节点的 seq.
-- `shadowed`:当前表面从 `boundary` 到 `end` 的全部节点,必须逐个写进 `sourceEventSeqs`(宿主会校验,漏一个就拒写).
-- 空内容的 `system/message` 不投影出任何消息,所以替换之后模型看到的历史正好停在上一轮结束;替换本身是日志里的一行,重启后可重放.
-- 撤回前先清掉该会话排队中的输入(`sessionController.state` 读出,逐条 `updateQueue({action:{kind:"remove"}})`):否则那条待发消息会立刻开一轮,把刚遮蔽的历史重新长出来. 宿主不暴露队列能力时只记一条 warn,撤回照常进行.
-- 界面同步:客户端半读出墓碑里的 `data.recall`(含 `sessionId`),把**当前会话**里 `boundary..end` 区间的聊天行置 `visibility:"hidden"`(宿主的 `isVisibleChatNode` 按这个字段过滤;用户提问行也走同一条定义层通道). 区间按会话隔离,所以在 A 会话撤回不会影响 B 会话的行. 点确认后先用响应里的 `{boundary, seq}` 乐观隐藏,不等墓碑事件回流.
-
-### 边界(不做的事)
-
-- **不回滚副作用**:已写入的文件,已执行的命令不会撤销.
-- **不回填附件**:只回填该轮 `user/message` 的文本;图片与文件附件需要重新选择.
-- **不是时间旅行**:撤销的是"最后一轮",不是任意轮.
-- **不重编轮号**:撤回后 turn 计数继续往上走;消息编号与 Plan 轨迹日志同样不回退.
-- **token 记账不缩水**:就地撤回只写一条墓碑(不动 `compaction/prune` 的影子价),上下文占用会在下一次真实压缩前偏大.
-
-## 工具三:移除 dsh 自带 office 技能
+## 工具二:移除 dsh 自带 office 技能
 
 桌面宿主在启动时用代码挂载 `@deepseek-ai/dsh-skill-office`,把 `office`,`office-docx`,
 `office-pptx`,`office-xlsx`,`office-render`,`office-recalculate`,`office-export-pdf`
@@ -294,51 +235,38 @@ metadata:
 
 全部字段可选;写在 profile 的 cordis 配置里,面板开关写在状态文件中(见下).
 
-| 字段                        | 默认                              | 含义                                                   |
-| --------------------------- | --------------------------------- | ------------------------------------------------------ |
-| `watch`                     | `true`                            | 监听扫描根以感知目录变化                               |
-| `watchUsePolling`           | `false`                           | 以轮询代替原生文件系统事件                             |
-| `watchPollIntervalMs`       | `100`                             | 轮询探测间隔                                           |
-| `watchStabilityThresholdMs` | `200`                             | 变更条目稳定窗口                                       |
-| `includeUserRoots`          | `true`                            | 是否扫描用户 `.agents` 根                              |
-| `agentsHome`                | `$DSH_AGENTS_HOME` \| `~/.agents` | 用户 agent 根                                          |
-| `excludedDirs`              | 见源码                            | 额外剪除的目录名                                       |
-| `extraRoots`                | `[]`                              | 以 `custom` 来源扫描的额外根                           |
-| `stateFile`                 | `$DSH_HOME/toolkit/state.json`    | 工具开关与待删除会话的文件位置                         |
-| `sessionsRoot`              | `$DSH_HOME/sessions`              | 会话日志根(只给启动清理旧版删除式撤回留下的遗留会话用) |
+| 字段                        | 默认                              | 含义                         |
+| --------------------------- | --------------------------------- | ---------------------------- |
+| `watch`                     | `true`                            | 监听扫描根以感知目录变化     |
+| `watchUsePolling`           | `false`                           | 以轮询代替原生文件系统事件   |
+| `watchPollIntervalMs`       | `100`                             | 轮询探测间隔                 |
+| `watchStabilityThresholdMs` | `200`                             | 变更条目稳定窗口             |
+| `includeUserRoots`          | `true`                            | 是否扫描用户 `.agents` 根    |
+| `agentsHome`                | `$DSH_AGENTS_HOME` \| `~/.agents` | 用户 agent 根                |
+| `excludedDirs`              | 见源码                            | 额外剪除的目录名             |
+| `extraRoots`                | `[]`                              | 以 `custom` 来源扫描的额外根 |
+| `stateFile`                 | `$DSH_HOME/toolkit/state.json`    | 工具开关的文件位置           |
 
 状态文件形状:
 
 ```json
 {
   "version": 1,
-  "tools": { "nested-skill": true, "undo-turn": true, "office-skills": false },
-  "pendingDeletes": [],
-  "pendingUnarchives": []
+  "tools": { "nested-skill": true, "office-skills": false }
 }
 ```
-
-`pendingDeletes` 是"会话仍存活,推迟到下次启动再删"的原会话 id;`pendingUnarchives` 是日志已删,还等着从归档集合里去掉的 id.启动时依次处理并清空.
-这两份清单只由**旧版的删除式撤回**产生;现在的就地撤回不写它们,启动清理保留下来给历史数据自愈.
-
-启动时还会做一次清扫:归档集合里**既没有日志,也不存活**的 id 会被直接摘掉(历史上旧版本留下的占位由此自愈),有日志或仍存活的归档条目保持不动.
 
 ## 宿主路由
 
 浏览器半通过连接服务的同源路由读写开关(`ctx.connection.fetch.register`,已鉴权):
 
-| 路由                     | 方法 | 请求                                   | 响应                                               |
-| ------------------------ | ---- | -------------------------------------- | -------------------------------------------------- |
-| `/api/toolkit/state`     | GET  | -                                      | `{ tools: [{ id, title, description, enabled }] }` |
-| `/api/toolkit/state`     | POST | `{ id, enabled }`                      | 同上(切换后的目录)                                 |
-| `/api/toolkit/undo-turn` | GET  | `?sessionId=<id>`                      | `{ available, reason?, prompt? }`                  |
-| `/api/toolkit/undo-turn` | POST | `{ sessionId, messageId?, boundary? }` | `{ boundary, seq, prompt }`                        |
-
-`messageId`/`boundary` 是可选的确认锚点:与最后一轮的用户消息对不上时按 `no-previous-turn` 拒绝,避免客户端撤掉别的一轮.
+| 路由                 | 方法 | 请求              | 响应                                               |
+| -------------------- | ---- | ----------------- | -------------------------------------------------- |
+| `/api/toolkit/state` | GET  | -                 | `{ tools: [{ id, title, description, enabled }] }` |
+| `/api/toolkit/state` | POST | `{ id, enabled }` | 同上(切换后的目录)                                 |
 
 错误体为 `{ error, message }`:`invalid-body`(400),`unknown-tool`(400),
-`tool-disabled`(409),`no-previous-turn`(409),`session-not-live`(409),
-`agent-busy`(409),`unsupported-host`(501).
+`invalid-settings`(400),`internal`(500),`unsupported-host`(501).
 
 ## 兼容性
 
@@ -346,8 +274,8 @@ metadata:
 `>=0.2.1-rc.3`,任何更新的宿主(预发布或稳定)都满足;没有 `engines.dsh`,因此 0.2.x 的
 兼容性评估对每一版都通过.
 
-客户端半的契约(slot 名,面板/按钮的 owner props,`uiWorkspace` 与 `conversation` 的入口,
-平台模块表里的 `@deepseek-ai/dsh-client-ui-primitives`)按宿主 `0.2.1-rc.5` 的实装取证,
+客户端半的契约(slot 名,面板的 owner props,平台模块表里的
+`@deepseek-ai/dsh-client-ui-primitives`)按宿主 `0.2.1-rc.5` 的实装取证,
 结构声明集中在 `src/client/contract.ts`;宿主升级后若形状漂移,会在真机验收暴露.
 
 ## 验证
@@ -356,9 +284,6 @@ metadata:
 2. 关闭"嵌套 skill 发现"后新会话的 skill 目录里不再有嵌套 skill;重新打开后恢复.
 3. 开启"移除 dsh 自带 office 技能"后新会话的 skill 目录里不再有 `office*`;
    `skill` 加载 `office-docx` 也拿不到内容;关闭开关后恢复.
-4. 任意会话发一条消息,等它跑完,点"撤回"→ 确认:那一轮从对话里消失(会话 id 与会话行不变),
-   输入框出现刚才那条原文,会话日志里多出一条 `system/message` 墓碑、表面最后一个节点就是它.
-5. 会话正在跑一轮时按钮置灰;只剩一轮时同样置灰.
 
 ## 卸载
 

@@ -4,12 +4,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 import z from "@deepseek-ai/schemastery";
 import type Schema from "@deepseek-ai/schemastery";
-import type {
-  NanoFlowSettings,
-  NotesSnapshot,
-  UndoAvailability,
-  UndoTurnResponse,
-} from "./contract.js";
+import type { NanoFlowSettings, NotesSnapshot } from "./contract.js";
 import { createNanoFlowSettingsStore, nodeNanoFlowSettingsIo } from "./host/nano-flow-settings.js";
 import { NANO_FLOW_SERVICE, type ToolkitNanoFlowFacade } from "./host/nano-flow-facade.js";
 import { createNanoFlowTool } from "./host/tools/nano-flow.js";
@@ -21,10 +16,7 @@ import { recordMount, restoreMountReport } from "./nano-flow/session/mount-repor
 import { buildNotesSnapshot } from "./nano-flow/planning/notes.js";
 import { NANO_FLOW_PRESET_ID, nanoFlowEntryUrl } from "./nano-flow/assembly/preset.js";
 import { createRotation, type RotationSession } from "./nano-flow/session/rotate.js";
-import {
-  createPlanLogService,
-  type PlanLogService,
-} from "./nano-flow/planning/plan-log-service.js";
+import { createPlanLogService } from "./nano-flow/planning/plan-log-service.js";
 import {
   BINDINGS_FILE,
   inheritedPlanDirectory,
@@ -40,27 +32,14 @@ import { resolveWorkspace } from "./nano-flow/session/workspace.js";
 import { hostServices } from "./nano-flow/session/services.js";
 import { createNestedSkillTool } from "./host/tools/nested-skill.js";
 import { createOfficeSkillsTool } from "./host/tools/office-skills.js";
-import { createUndoTurnTool } from "./host/tools/undo-turn.js";
 import { registerToolkitRoutes, type ToolkitRouteRegistry } from "./host/toolkit-routes.js";
 import { ToolkitRegistry } from "./host/toolkit-registry.js";
 import { nodeToolkitStateIo, ToolkitStateStore } from "./host/toolkit-state.js";
-import { runPendingPurge, runPendingUnarchive } from "./host/undo/purge.js";
-import {
-  UndoUnavailableError,
-  inspectUndo,
-  undoTurn,
-  type UndoAgentLookup,
-  type UndoAnchor,
-  type UndoDeps,
-  type UndoQueueController,
-  type UndoSessionStore,
-} from "./host/undo/undo-turn.js";
 import {
   hasMethod,
   serviceOf,
   type HostSessionPersistence,
   type HostSessionStore,
-  type HostWorkspaceRegistry,
 } from "./host/services.js";
 import { DEFAULT_EXCLUDED_DIRS, type NestedSkillOptions } from "./nested-skill/provider.js";
 
@@ -69,12 +48,10 @@ export type { NestedSkillSource } from "./nested-skill/provider.js";
 export { TOOL_IDS } from "./contract.js";
 import { describeError } from "./shared/errors.js";
 
-/** 插件配置：嵌套 skill 工具的选项 + 工具目录状态与会话日志根的位置覆盖。 */
+/** 插件配置：嵌套 skill 工具的选项 + 状态文件位置覆盖。 */
 export type Config = NestedSkillOptions & {
   /** 工具状态文件；缺省 `$DSH_HOME/toolkit/state.json`。 */
   stateFile?: string;
-  /** 会话日志根；缺省 `$DSH_HOME/sessions`。 */
-  sessionsRoot?: string;
   /** Nano Flow 上限设置文件；缺省 `$DSH_HOME/toolkit/nano-flow.json`。 */
   nanoFlowFile?: string;
   /** 会话↔Plan 绑定表；缺省 `$DSH_HOME/toolkit/nano-flow-plan-bindings.json`。 */
@@ -97,7 +74,6 @@ export const Config: Schema<Config> = z.object({
   excludedDirs: z.array(z.string()).default(DEFAULT_EXCLUDED_DIRS),
   extraRoots: z.array(z.string()).default([]),
   stateFile: z.string(),
-  sessionsRoot: z.string(),
   nanoFlowFile: z.string(),
   bindingsFile: z.string(),
   workspace: z.string(),
@@ -176,7 +152,7 @@ export const name = "toolkit";
 export const inject = ["skills"];
 
 /**
- * 挂载工具集：注册路由、按持久状态启停工具，并清理上次运行遗留的待删除会话。
+ * 挂载工具集：注册路由并按持久状态启停工具。
  * @param ctx - 插件所在 cordis 上下文。
  * @param config - 插件配置；全部字段可选。
  */
@@ -196,7 +172,7 @@ export const apply = (ctx: Context, config: Config = {}): void => {
     logger: ctx.logger,
   });
   ctx.effect(() => () => void planLog.dispose(), "toolkit: plan log");
-  const runtime = createRuntime(ctx, config, planLog);
+  const runtime = createRuntime(ctx, config);
   ctx.effect(() => () => void runtime.dispose(), "toolkit: runtime");
   restoreMountReport();
   ctx.inject(["connection"], (child: Context) => {
@@ -206,11 +182,6 @@ export const apply = (ctx: Context, config: Config = {}): void => {
       registry: runtime.registry,
       connection,
       logger: ctx.logger,
-      undo: {
-        inspect: (sessionId: string) => runtime.inspect(sessionId),
-        run: (sessionId: string, anchor?: UndoAnchor) => runtime.undo(sessionId, anchor),
-      },
-      hiddenSessions: () => runtime.hiddenSessions(),
       nanoFlow: {
         get: () => runtime.nanoFlow.get(),
         update: (patch: unknown) => runtime.nanoFlow.update(patch),
@@ -292,9 +263,6 @@ export const apply = (ctx: Context, config: Config = {}): void => {
       return disposeRotation;
     }, "toolkit: nano-flow rotation");
   });
-  ctx.inject(["workspaceRegistry"], (child: Context) => {
-    void runtime.cleanupArchive(child);
-  });
   // 订阅会话事件 firehose（seed 不触发），按轮把 compact 摘要追加到 Plan 的 log.jsonl。
   ctx.inject(["sessionPersistence"], (child: Context) => {
     const persistence = serviceOf<{ open(id: string, mode: "read"): Promise<unknown> }>(
@@ -319,8 +287,6 @@ export const apply = (ctx: Context, config: Config = {}): void => {
 interface ToolkitRuntime {
   readonly registry: ToolkitRegistry;
   start(): Promise<void>;
-  /** 已撤回、应在客户端隐藏的会话 id。 */
-  hiddenSessions(): readonly string[];
   /** 写入或切换会话↔Plan 绑定（只有 nano_flow_bind 调用）。 */
   rebindSession(sessionId: string, planDirectory: string, workspace: string): Promise<void>;
   /** Nano Flow 上限设置（面板路由读写）。 */
@@ -330,18 +296,12 @@ interface ToolkitRuntime {
   };
   /** 当前会话要展示的未完成 note 快照；不写会话日志。 */
   notesOf(sessionId: string): NotesSnapshot | null;
-  inspect(sessionId: string): UndoAvailability;
-  /** 就地撤回最后一轮；`anchor` 是客户端确认时携带的消息锚点。 */
-  undo(sessionId: string, anchor?: UndoAnchor): Promise<UndoTurnResponse>;
-  /** 工作区注册表就绪后，把日志已删的会话从归档集合里摘掉（旧的删除式撤回留下的痕迹）。 */
-  cleanupArchive(ctx: Context): Promise<void>;
   dispose(): Promise<void>;
 }
 
-const createRuntime = (ctx: Context, config: Config, planLog: PlanLogService): ToolkitRuntime => {
+const createRuntime = (ctx: Context, config: Config): ToolkitRuntime => {
   const logger = ctx.logger;
   const home = resolveDshHome();
-  const sessionsRoot = config.sessionsRoot ?? join(home, "sessions");
   const store = new ToolkitStateStore(
     nodeToolkitStateIo(config.stateFile ?? join(home, "toolkit", "state.json")),
   );
@@ -351,44 +311,10 @@ const createRuntime = (ctx: Context, config: Config, planLog: PlanLogService): T
   );
   const tools = [
     createNestedSkillTool(nestedOptions(config)),
-    createUndoTurnTool(),
     createOfficeSkillsTool(),
     createNanoFlowTool({ entryUrl: nanoFlowEntryUrl(import.meta.url) }),
   ];
   const registry = new ToolkitRegistry({ ctx, tools, store, logger });
-  /**
-   * 广播「会话已移除」：`api-session/removed` 是宿主销毁会话时客户端依赖的那条事件。
-   *
-   * 就地撤回不再走这条路径（会话还在），只有显式删除会话的入口用它。
-   */
-  const registerRemoval = (sessionId: string): void => {
-    // 会话没了，轨迹服务也要放开它的读句柄。
-    void planLog.forget(sessionId);
-    const emit = (ctx as { emit?: (event: string, ...args: unknown[]) => void }).emit;
-    if (typeof emit !== "function") return;
-    emit.call(ctx, "api-session/removed", sessionId);
-  };
-  /**
-   * 就地撤回的宿主能力：会话存储是硬依赖，队列清理是软依赖
-   * （宿主不暴露 `sessionController.state/updateQueue` 时撤回照常进行）。
-   */
-  const undoTarget = (): UndoDeps | undefined => {
-    const sessions = serviceOf<UndoSessionStore>(ctx, "sessions");
-    if (!hasMethod<UndoSessionStore>(sessions, "get")) return undefined;
-    const controller = serviceOf<UndoQueueController>(ctx, "sessionController");
-    const queue =
-      hasMethod<UndoQueueController>(controller, "state") &&
-      hasMethod<UndoQueueController>(controller, "updateQueue")
-        ? controller
-        : undefined;
-    const agents = serviceOf<UndoAgentLookup>(ctx, "agents");
-    return {
-      sessions,
-      logger,
-      ...(queue === undefined ? {} : { controller: queue }),
-      ...(hasMethod<UndoAgentLookup>(agents, "get") ? { agents } : {}),
-    };
-  };
   /**
    * 写入或切换绑定：`nano_flow_bind` 的唯一落点。
    *
@@ -408,14 +334,6 @@ const createRuntime = (ctx: Context, config: Config, planLog: PlanLogService): T
   const nanoFlow: ToolkitNanoFlowFacade = {
     settings: () => settings.current(),
     updateSettings: (patch: unknown) => settings.update(patch),
-    announceRemoved: async (sessionId: string) => {
-      await store.addHiddenSession(sessionId);
-      registerRemoval(sessionId);
-    },
-    recordPendingDelete: async (sessionId: string) => {
-      await store.addPendingDelete(sessionId);
-    },
-    sessionsRoot: () => sessionsRoot,
     rebindSession,
   };
   ctx.effect(() => {
@@ -444,42 +362,11 @@ const createRuntime = (ctx: Context, config: Config, planLog: PlanLogService): T
       try {
         await settings.load();
         await registry.initialize();
-        const workspaces = workspaceRegistry(ctx);
-        await runPendingPurge(
-          store,
-          sessionsRoot,
-          logger,
-          undefined,
-          workspaces === undefined
-            ? undefined
-            : async (sessionId: string) => {
-                await workspaces.unarchiveSession(sessionId);
-              },
-        );
       } catch (error) {
         logger.warn(`toolkit: start failed: ${describeError(error)}`);
       }
     },
-    hiddenSessions() {
-      return store.snapshot().hiddenSessionIds;
-    },
     rebindSession,
-    async cleanupArchive(child: Context) {
-      const workspaces = workspaceRegistry(child);
-      if (workspaces === undefined) return;
-      try {
-        await runPendingUnarchive(
-          store,
-          async (sessionId: string) => {
-            await workspaces.unarchiveSession(sessionId);
-          },
-          logger,
-        );
-        await sweepOrphanArchives(child, workspaces, logger);
-      } catch (error) {
-        logger.warn(`toolkit: archive cleanup failed: ${describeError(error)}`);
-      }
-    },
     async dispose() {
       await registry.dispose();
     },
@@ -505,56 +392,7 @@ const createRuntime = (ctx: Context, config: Config, planLog: PlanLogService): T
         return null;
       }
     },
-    inspect(sessionId) {
-      const deps = undoTarget();
-      if (deps === undefined) return { available: false, reason: "unsupported-host" };
-      return inspectUndo(deps, sessionId);
-    },
-    async undo(sessionId, anchor) {
-      const deps = undoTarget();
-      if (deps === undefined) {
-        throw new UndoUnavailableError("unsupported-host", "this host exposes no session store");
-      }
-      return undoTurn(deps, sessionId, anchor);
-    },
   };
-};
-
-/**
- * 清掉「归档集合里、但会话已经不存在」的 id：日志删掉之后留下的最后一点痕迹。
- * 活着的会话与会话日志仍在的会话都保留（它们的归档是有意义的）。
- */
-const sweepOrphanArchives = async (
-  ctx: Context,
-  workspaces: HostWorkspaceRegistry,
-  logger: { warn(message: string): void },
-): Promise<void> => {
-  const archived = workspaces.archivedSessionIds;
-  if (archived.length === 0) return;
-  const persistence = serviceOf<HostSessionPersistence>(ctx, "sessionPersistence");
-  const sessions = serviceOf<HostSessionStore>(ctx, "sessions");
-  const stored =
-    hasMethod<HostSessionPersistence>(persistence, "list") === true
-      ? new Set((await persistence.list()).map((snapshot) => snapshot.header.id))
-      : undefined;
-  for (const sessionId of archived) {
-    if (sessions !== undefined && sessions.get(sessionId) !== undefined) continue;
-    if (stored !== undefined && stored.has(sessionId)) continue;
-    try {
-      await workspaces.unarchiveSession(sessionId);
-    } catch (error) {
-      logger.warn(
-        `toolkit: dropping orphan archive "${sessionId}" failed: ${describeError(error)}`,
-      );
-    }
-  }
-};
-
-const workspaceRegistry = (ctx: Context): HostWorkspaceRegistry | undefined => {
-  const service = serviceOf<HostWorkspaceRegistry>(ctx, "workspaceRegistry");
-  if (!hasMethod<HostWorkspaceRegistry>(service, "list")) return undefined;
-  if (!hasMethod<HostWorkspaceRegistry>(service, "archiveSession")) return undefined;
-  return service;
 };
 
 /** `ctx.connection.fetch` 是对象而不是函数，因此单独判断其 `register` 成员。 */

@@ -1,13 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import {
-  fetchHiddenSessions,
-  fetchNanoFlowNotes,
-  fetchToolkitState,
-  fetchUndoAvailability,
-  HostApiError,
-  runUndoTurn,
-  setToolEnabled,
-} from "./host-api.js";
+import { fetchNanoFlowNotes, fetchToolkitState, HostApiError, setToolEnabled } from "./host-api.js";
 
 const tool = (id: string, enabled: boolean) => ({
   id,
@@ -37,13 +29,13 @@ describe("host api", () => {
   });
 
   it("posts a toggle as JSON", async () => {
-    const fetchMock = vi.fn(async () => json({ tools: [tool("undo-turn", false)] }));
+    const fetchMock = vi.fn(async () => json({ tools: [tool("nano-flow", false)] }));
     vi.stubGlobal("fetch", fetchMock);
-    const tools = await setToolEnabled("undo-turn", false);
+    const tools = await setToolEnabled("nano-flow", false);
     expect(tools[0]?.enabled).toBe(false);
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(init.method).toBe("POST");
-    expect(init.body).toBe('{"id":"undo-turn","enabled":false}');
+    expect(init.body).toBe('{"id":"nano-flow","enabled":false}');
   });
 
   it("reads the nano-flow notes snapshot with an encoded session id", async () => {
@@ -132,76 +124,5 @@ describe("host api", () => {
       vi.fn(async () => json({ tools: "nope" })),
     );
     await expect(fetchToolkitState()).rejects.toMatchObject({ code: "invalid-response" });
-  });
-
-  it("encodes the session id in the availability probe", async () => {
-    const fetchMock = vi.fn(async () => json({ available: true, prompt: "hi" }));
-    vi.stubGlobal("fetch", fetchMock);
-    await expect(fetchUndoAvailability("session a/b")).resolves.toEqual({
-      available: true,
-      prompt: "hi",
-    });
-    const [target] = fetchMock.mock.calls[0] as unknown as [string];
-    expect(target).toBe("api/toolkit/undo-turn?sessionId=session%20a%2Fb");
-  });
-
-  it("normalizes odd availability payloads to unavailable", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => json({ available: "yes", reason: 42 })),
-    );
-    await expect(fetchUndoAvailability("s1")).resolves.toEqual({ available: false });
-  });
-
-  it("runs undo and reads the in-place cut points", async () => {
-    const fetchMock = vi.fn(async () => json({ boundary: 10, seq: 20, prompt: "x" }));
-    vi.stubGlobal("fetch", fetchMock);
-    await expect(runUndoTurn("s1")).resolves.toEqual({ boundary: 10, seq: 20, prompt: "x" });
-    const [target, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(target).toBe("api/toolkit/undo-turn");
-    expect(init.body).toBe('{"sessionId":"s1"}');
-  });
-
-  it("accepts the {ok, value} envelope as well as a flat payload", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => json({ ok: true, value: { boundary: 3, seq: 9, prompt: "" } })),
-    );
-    await expect(runUndoTurn("s1")).resolves.toEqual({ boundary: 3, seq: 9, prompt: "" });
-  });
-
-  it("rejects undo payloads without usable cut points", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => json({ prompt: "x" })),
-    );
-    await expect(runUndoTurn("s1")).rejects.toMatchObject({ code: "invalid-response" });
-
-    // 切点必须是整数 seq；end 不能早于 boundary。
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => json({ boundary: 10, seq: 9, prompt: "x" })),
-    );
-    await expect(runUndoTurn("s1")).rejects.toMatchObject({ code: "invalid-response" });
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => json({ boundary: 1.5, seq: 9, prompt: "x" })),
-    );
-    await expect(runUndoTurn("s1")).rejects.toMatchObject({ code: "invalid-response" });
-  });
-  it("reads the hidden session ids", async () => {
-    const fetchMock = vi.fn(async (_input: string) => json({ ids: ["session-a", "session-b"] }));
-    vi.stubGlobal("fetch", fetchMock);
-    await expect(fetchHiddenSessions()).resolves.toEqual(["session-a", "session-b"]);
-    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("api/toolkit/hidden");
-  });
-
-  it("treats an unreachable hidden route as empty", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => json({ error: "not-found", message: "nope" }, 404)),
-    );
-    await expect(fetchHiddenSessions()).resolves.toEqual([]);
   });
 });

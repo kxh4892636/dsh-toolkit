@@ -4,15 +4,10 @@ import { dirname } from "node:path";
 /** 状态文件格式版本；读取到其它版本只保留可识别字段。 */
 const TOOLKIT_STATE_VERSION = 1;
 
-/** 状态文件内容：逐工具开关 + 待删除的原会话 id。 */
+/** 状态文件内容：逐工具开关。 */
 interface ToolkitStateDoc {
   version: number;
   tools: Record<string, boolean>;
-  pendingDeletes: string[];
-  /** 日志已删、还等着从归档集合里去掉的会话 id（不留任何占位）。 */
-  pendingUnarchives: string[];
-  /** 已撤回、需要在客户端会话列表里隐藏的 id（宿主会合并存活会话，日志删了也仍被列出）。 */
-  hiddenSessionIds: string[];
 }
 
 /** 状态文件的最小 I/O 边界；测试注入内存实现，生产用 node fs。 */
@@ -21,13 +16,10 @@ export interface ToolkitStateIo {
   write(text: string): Promise<void>;
 }
 
-/** 空状态：没有开关记录，也没有待删除项。 */
+/** 空状态：没有任何开关记录。 */
 export const emptyToolkitState = (): ToolkitStateDoc => ({
   version: TOOLKIT_STATE_VERSION,
   tools: {},
-  pendingDeletes: [],
-  pendingUnarchives: [],
-  hiddenSessionIds: [],
 });
 
 /** node fs 实现：写入先落临时文件再 rename，避免半截文件。 */
@@ -64,18 +56,10 @@ export const parseToolkitState = (text: string | undefined): ToolkitStateDoc => 
     return emptyToolkitState();
   }
   if (typeof raw !== "object" || raw === null) return emptyToolkitState();
-  const record = raw as {
-    tools?: unknown;
-    pendingDeletes?: unknown;
-    pendingUnarchives?: unknown;
-    hiddenSessionIds?: unknown;
-  };
+  const record = raw as { tools?: unknown };
   return {
     version: TOOLKIT_STATE_VERSION,
     tools: parseTools(record.tools),
-    pendingDeletes: parsePendingIds(record.pendingDeletes),
-    pendingUnarchives: parsePendingIds(record.pendingUnarchives),
-    hiddenSessionIds: parsePendingIds(record.hiddenSessionIds),
   };
 };
 
@@ -85,9 +69,6 @@ export const serializeToolkitState = (doc: ToolkitStateDoc): string => {
     {
       version: TOOLKIT_STATE_VERSION,
       tools: doc.tools,
-      pendingDeletes: doc.pendingDeletes,
-      pendingUnarchives: doc.pendingUnarchives,
-      hiddenSessionIds: doc.hiddenSessionIds,
     },
     null,
     2,
@@ -101,16 +82,6 @@ const parseTools = (value: unknown): Record<string, boolean> => {
     if (typeof enabled === "boolean") tools[id] = enabled;
   }
   return tools;
-};
-
-const parsePendingIds = (value: unknown): string[] => {
-  if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === "string" && isSessionId(entry));
-};
-
-/** 会话 id 同时用作目录名，解析阶段就拒绝任何路径分隔符。 */
-export const isSessionId = (value: string): boolean => {
-  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(value);
 };
 
 const isMissing = (error: unknown): boolean => {
@@ -140,9 +111,6 @@ export class ToolkitStateStore {
     return {
       version: this.doc.version,
       tools: { ...this.doc.tools },
-      pendingDeletes: [...this.doc.pendingDeletes],
-      pendingUnarchives: [...this.doc.pendingUnarchives],
-      hiddenSessionIds: [...this.doc.hiddenSessionIds],
     };
   }
 
@@ -150,60 +118,6 @@ export class ToolkitStateStore {
   async setTool(id: string, enabled: boolean): Promise<ToolkitStateDoc> {
     await this.enqueue(async () => {
       this.doc = { ...this.doc, tools: { ...this.doc.tools, [id]: enabled } };
-      await this.io.write(serializeToolkitState(this.doc));
-    });
-    return this.snapshot();
-  }
-
-  /** 追加待删除的原会话 id（去重）并落盘。 */
-  async addPendingDelete(sessionId: string): Promise<ToolkitStateDoc> {
-    await this.enqueue(async () => {
-      if (this.doc.pendingDeletes.includes(sessionId)) return;
-      this.doc = { ...this.doc, pendingDeletes: [...this.doc.pendingDeletes, sessionId] };
-      await this.io.write(serializeToolkitState(this.doc));
-    });
-    return this.snapshot();
-  }
-
-  /** 记下一个应在客户端隐藏的会话 id（去重）并落盘。 */
-  async addHiddenSession(sessionId: string): Promise<ToolkitStateDoc> {
-    await this.enqueue(async () => {
-      if (this.doc.hiddenSessionIds.includes(sessionId)) return;
-      this.doc = {
-        ...this.doc,
-        hiddenSessionIds: [...this.doc.hiddenSessionIds, sessionId],
-      };
-      await this.io.write(serializeToolkitState(this.doc));
-    });
-    return this.snapshot();
-  }
-
-  /** 追加待撤销归档的会话 id（去重）并落盘。 */
-  async addPendingUnarchive(sessionId: string): Promise<ToolkitStateDoc> {
-    await this.enqueue(async () => {
-      if (this.doc.pendingUnarchives.includes(sessionId)) return;
-      this.doc = {
-        ...this.doc,
-        pendingUnarchives: [...this.doc.pendingUnarchives, sessionId],
-      };
-      await this.io.write(serializeToolkitState(this.doc));
-    });
-    return this.snapshot();
-  }
-
-  /** 用处理后的结果替换待撤销归档清单并落盘。 */
-  async setPendingUnarchives(ids: readonly string[]): Promise<ToolkitStateDoc> {
-    await this.enqueue(async () => {
-      this.doc = { ...this.doc, pendingUnarchives: [...ids] };
-      await this.io.write(serializeToolkitState(this.doc));
-    });
-    return this.snapshot();
-  }
-
-  /** 用处理后的结果替换待删除清单并落盘。 */
-  async setPendingDeletes(ids: readonly string[]): Promise<ToolkitStateDoc> {
-    await this.enqueue(async () => {
-      this.doc = { ...this.doc, pendingDeletes: [...ids] };
       await this.io.write(serializeToolkitState(this.doc));
     });
     return this.snapshot();

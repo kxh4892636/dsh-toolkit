@@ -55,13 +55,6 @@ interface PlanLogOptions {
 export interface PlanLogService {
   attach(persistence: PersistenceLike): void;
   onEvent(session: unknown, event: unknown): void;
-  /**
-   * 忘掉一个已被移除的会话：关掉读句柄、丢掉状态，迟到的事件不再把它拉回内存。
-   *
-   * 轮转与撤回都会物理删除会话；不清理的话每次轮转都留一个打开的句柄和一条状态。
-   * @param sessionId - 已删除的会话 id。
-   */
-  forget(sessionId: string): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -84,7 +77,6 @@ interface SessionState {
 }
 
 /** 已移除会话 id 的保留上限。 */
-const GONE_LIMIT = 256;
 
 const asSession = (value: unknown): PlanLogSession | undefined =>
   isRecord(value) ? (value as PlanLogSession) : undefined;
@@ -106,8 +98,6 @@ export const createPlanLogService = (options: PlanLogOptions): PlanLogService =>
   const bindingsFile = options.bindingsFile ?? join(options.home, "toolkit", BINDINGS_FILE);
   const exists: DirectoryExists = existsSync;
   const sessions = new Map<string, SessionState>();
-  /** 已移除的会话 id；只留最近一批，挡住迟到事件又不至于自己变成泄漏。 */
-  const gone = new Set<string>();
   let persistence: PersistenceLike | undefined;
 
   const warn = (message: string): void => {
@@ -119,14 +109,6 @@ export const createPlanLogService = (options: PlanLogOptions): PlanLogService =>
   };
 
   const loadBindings = async (): Promise<BindingTable> => readBindings(bindingsFile);
-
-  /** 记住已移除的会话；超过上限时丢掉最早的一条（保持集合有界）。 */
-  const rememberGone = (sessionId: string): void => {
-    gone.add(sessionId);
-    if (gone.size <= GONE_LIMIT) return;
-    const oldest = gone.values().next();
-    if (oldest.done !== true) gone.delete(oldest.value);
-  };
 
   const scanLog = async (
     file: string,
@@ -163,8 +145,6 @@ export const createPlanLogService = (options: PlanLogOptions): PlanLogService =>
     const sessionId = session.id;
     const cwd = session.header?.cwd;
     if (sessionId === undefined || cwd === undefined || cwd === "") return undefined;
-    // 已移除的会话不再跟踪：轮转后旧会话不该重新占一份状态与句柄。
-    if (gone.has(sessionId)) return undefined;
     let state = sessions.get(sessionId);
     if (state === undefined) {
       state = {
@@ -307,7 +287,6 @@ export const createPlanLogService = (options: PlanLogOptions): PlanLogService =>
     if (session === undefined || event === undefined) return;
     const sessionId = session.id;
     if (sessionId === undefined) return;
-    if (gone.has(sessionId)) return;
     if (event.type === "agent-preset/selected") {
       presets.set(sessionId, isNanoFlowPreset([event]));
       return;
@@ -345,20 +324,6 @@ export const createPlanLogService = (options: PlanLogOptions): PlanLogService =>
       persistence = next;
     },
     onEvent,
-    async forget(sessionId: string): Promise<void> {
-      rememberGone(sessionId);
-      presets.delete(sessionId);
-      const state = sessions.get(sessionId);
-      if (state === undefined) return;
-      sessions.delete(sessionId);
-      // 先等排队中的 flush 跑完再关句柄：删状态不能截断正在写的那一轮。
-      await state.chain.catch(() => undefined);
-      try {
-        await state.handle?.close();
-      } catch (error) {
-        warn(`close of "${sessionId}" failed: ${String(error)}`);
-      }
-    },
     async dispose(): Promise<void> {
       for (const state of sessions.values()) {
         try {

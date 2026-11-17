@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { apply, Config, inject, name, TOOL_IDS } from "./index.js";
-import { TOOLKIT_NANO_FLOW_NOTES_PATH, TOOLKIT_STATE_PATH, TOOLKIT_UNDO_PATH } from "./contract.js";
+import { TOOLKIT_NANO_FLOW_NOTES_PATH, TOOLKIT_STATE_PATH } from "./contract.js";
 import { NANO_FLOW_SERVICE } from "./host/nano-flow-facade.js";
 import { serviceOf } from "./host/services.js";
 import { makeHarness, tempDir, post, enable, workspaces } from "./index.test-support.js";
@@ -20,7 +20,6 @@ describe("toolkit plugin entry", () => {
     expect(inject).toEqual(["skills"]);
     expect(TOOL_IDS).toEqual({
       nestedSkill: "nested-skill",
-      undoTurn: "undo-turn",
       officeSkills: "office-skills",
       nanoFlow: "nano-flow",
     });
@@ -33,8 +32,8 @@ describe("toolkit plugin entry", () => {
   it("starts with every tool switched off", async () => {
     const directory = await tempDir();
     const { ctx, routes, providerNames } = makeHarness();
-    apply(ctx as never, { stateFile: join(directory, "state.json"), sessionsRoot: directory });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
+    apply(ctx as never, { stateFile: join(directory, "state.json") });
+    await vi.waitFor(() => expect(routes.size).toBe(3));
     expect(providerNames).toEqual([]);
     const state = await routes.get(TOOLKIT_STATE_PATH)?.(
       new Request(`http://127.0.0.1${TOOLKIT_STATE_PATH}`),
@@ -42,7 +41,6 @@ describe("toolkit plugin entry", () => {
     const body = (await state?.json()) as { tools: { id: string; enabled: boolean }[] };
     expect(body.tools.map((tool) => `${tool.id}:${tool.enabled}`)).toEqual([
       "nested-skill:false",
-      "undo-turn:false",
       "office-skills:false",
       "nano-flow:false",
     ]);
@@ -61,10 +59,9 @@ describe("toolkit plugin entry", () => {
     const { ctx, routes } = makeHarness({ notesSession: { id: "session-1", cwd: directory } });
     apply(ctx as never, {
       stateFile: join(directory, "state.json"),
-      sessionsRoot: directory,
       bindingsFile: bindings,
     });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
+    await vi.waitFor(() => expect(routes.size).toBe(3));
     // 未绑定 Plan 的会话不显示面板。
     const unbound = await routes.get(TOOLKIT_NANO_FLOW_NOTES_PATH)?.(
       new Request(`http://127.0.0.1${TOOLKIT_NANO_FLOW_NOTES_PATH}?sessionId=session-1`),
@@ -113,10 +110,9 @@ describe("toolkit plugin entry", () => {
     const { ctx, routes } = makeHarness({ notesSession: { id: "session-1", cwd: directory } });
     apply(ctx as never, {
       stateFile: join(directory, "state.json"),
-      sessionsRoot: directory,
       bindingsFile: bindings,
     });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
+    await vi.waitFor(() => expect(routes.size).toBe(3));
     await writeFile(
       bindings,
       JSON.stringify({
@@ -150,10 +146,9 @@ describe("toolkit plugin entry", () => {
     const { ctx, routes, provided } = makeHarness({ persistence: { stored: ["session-1"] } });
     apply(ctx as never, {
       stateFile: join(directory, "state.json"),
-      sessionsRoot: directory,
       bindingsFile: bindings,
     });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
+    await vi.waitFor(() => expect(routes.size).toBe(3));
     const facade = provided[NANO_FLOW_SERVICE] as {
       rebindSession(id: string, plan: string, workspace: string): Promise<void>;
     };
@@ -187,10 +182,9 @@ describe("toolkit plugin entry", () => {
     });
     apply(ctx as never, {
       stateFile: join(directory, "state.json"),
-      sessionsRoot: directory,
       bindingsFile: bindings,
     });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
+    await vi.waitFor(() => expect(routes.size).toBe(3));
     const facade = provided[NANO_FLOW_SERVICE] as {
       rebindSession(id: string, plan: string, workspace: string): Promise<void>;
     };
@@ -221,10 +215,9 @@ describe("toolkit plugin entry", () => {
     const { ctx, routes, provided } = makeHarness();
     apply(ctx as never, {
       stateFile: join(directory, "state.json"),
-      sessionsRoot: directory,
       bindingsFile: bindings,
     });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
+    await vi.waitFor(() => expect(routes.size).toBe(3));
     const facade = provided[NANO_FLOW_SERVICE] as {
       rebindSession(id: string, plan: string, workspace: string): Promise<void>;
     };
@@ -249,10 +242,9 @@ describe("toolkit plugin entry", () => {
     });
     apply(ctx as never, {
       stateFile: join(directory, "state.json"),
-      sessionsRoot: directory,
       bindingsFile: bindings,
     });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
+    await vi.waitFor(() => expect(routes.size).toBe(3));
     const facade = provided[NANO_FLOW_SERVICE] as {
       rebindSession(id: string, plan: string, workspace: string): Promise<void>;
     };
@@ -281,10 +273,9 @@ describe("toolkit plugin entry", () => {
     const { ctx, routes, provided } = makeHarness({ persistence: { stored: [] } });
     apply(ctx as never, {
       stateFile: join(directory, "state.json"),
-      sessionsRoot: directory,
       bindingsFile: bindings,
     });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
+    await vi.waitFor(() => expect(routes.size).toBe(3));
     const facade = provided[NANO_FLOW_SERVICE] as {
       rebindSession(id: string, plan: string, workspace: string): Promise<void>;
     };
@@ -296,8 +287,8 @@ describe("toolkit plugin entry", () => {
   it("mounts the nested-skill provider once the tool is enabled", async () => {
     const directory = await tempDir();
     const { ctx, routes, providerNames } = makeHarness();
-    apply(ctx as never, { stateFile: join(directory, "state.json"), sessionsRoot: directory });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
+    apply(ctx as never, { stateFile: join(directory, "state.json") });
+    await vi.waitFor(() => expect(routes.size).toBe(3));
     await enable(routes, "nested-skill");
     await vi.waitFor(() => expect(providerNames).toEqual(["nested-agents"]));
   });
@@ -305,8 +296,8 @@ describe("toolkit plugin entry", () => {
   it("removes the provider when the nested-skill tool is switched off", async () => {
     const directory = await tempDir();
     const { ctx, routes, providerNames } = makeHarness();
-    apply(ctx as never, { stateFile: join(directory, "state.json"), sessionsRoot: directory });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
+    apply(ctx as never, { stateFile: join(directory, "state.json") });
+    await vi.waitFor(() => expect(routes.size).toBe(3));
     await enable(routes, "nested-skill");
     await vi.waitFor(() => expect(providerNames).toEqual(["nested-agents"]));
 
@@ -321,79 +312,20 @@ describe("toolkit plugin entry", () => {
     const directory = await tempDir();
     const stateFile = join(directory, "state.json");
     const first = makeHarness();
-    apply(first.ctx as never, { stateFile, sessionsRoot: directory });
-    await vi.waitFor(() => expect(first.routes.size).toBe(5));
+    apply(first.ctx as never, { stateFile });
+    await vi.waitFor(() => expect(first.routes.size).toBe(3));
     await enable(first.routes, "nested-skill");
     await vi.waitFor(() => expect(first.providerNames).toHaveLength(1));
 
     const second = makeHarness();
-    apply(second.ctx as never, { stateFile, sessionsRoot: directory });
+    apply(second.ctx as never, { stateFile });
     await vi.waitFor(() => expect(second.providerNames).toEqual(["nested-agents"]));
-  });
-
-  it("reports undo as unsupported when the host has no session control", async () => {
-    const directory = await tempDir();
-    const { ctx, routes } = makeHarness();
-    apply(ctx as never, { stateFile: join(directory, "state.json"), sessionsRoot: directory });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
-    await enable(routes, "undo-turn");
-    const response = await routes.get(TOOLKIT_UNDO_PATH)?.(
-      new Request(`http://127.0.0.1${TOOLKIT_UNDO_PATH}?sessionId=session-1`),
-    );
-    expect(await response?.json()).toEqual({ available: false, reason: "unsupported-host" });
-  });
-
-  it("runs undo in place through the composed host services", async () => {
-    const directory = await tempDir();
-    const { ctx, routes, archived, dequeued, emitted, queued, recalls } = makeHarness({
-      sessionControl: true,
-    });
-    apply(ctx as never, { stateFile: join(directory, "state.json"), sessionsRoot: directory });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
-    await enable(routes, "undo-turn");
-    queued.push("queued-1");
-
-    const undone = await routes.get(TOOLKIT_UNDO_PATH)?.(
-      post(TOOLKIT_UNDO_PATH, { sessionId: "session-source" }),
-    );
-    // 会话 id 不变：只剩切点、墓碑 seq 与原文。
-    expect(await undone?.json()).toEqual({ boundary: 4, seq: 5, prompt: "two" });
-    // 只写一条墓碑，且按当前表面覆盖到结尾。
-    expect(recalls).toHaveLength(1);
-    expect(recalls[0]).toMatchObject({
-      type: "system/message",
-      data: {
-        recall: { sessionId: "session-source", boundary: 4, end: 4 },
-        message: { role: "system", content: [] },
-      },
-      opts: { surfaceOp: { op: "replace", startSeq: 4, endSeq: 4 }, sourceEventSeqs: [4] },
-    });
-    // 排队中的输入先清掉，撤完不会又被那条待发消息开一轮。
-    expect(dequeued).toEqual(["queued-1"]);
-    // 不再归档、不再广播移除、也不藏列表行。
-    expect(archived).toEqual([]);
-    expect(emitted).not.toContainEqual(["api-session/removed", "session-source"]);
-    const hidden = await routes.get("/api/toolkit/hidden")?.(
-      new Request("http://x/api/toolkit/hidden"),
-    );
-    await expect(hidden?.json()).resolves.toEqual({ ids: [] });
-  });
-
-  it("drops archived ids whose session no longer exists", async () => {
-    const directory = await tempDir();
-    const { ctx, routes, unarchived } = makeHarness({
-      archiveSweep: { archived: ["ghost", "kept", "live"], stored: ["kept"], live: ["live"] },
-    });
-    apply(ctx as never, { stateFile: join(directory, "state.json"), sessionsRoot: directory });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
-    // 只有既不在持久化、也不存活的 id 会被从归档集合里摘掉。
-    await vi.waitFor(() => expect(unarchived).toEqual(["ghost"]));
   });
 
   it("skips routes when the host exposes no connection registry", async () => {
     const directory = await tempDir();
     const { ctx, routes, providerNames } = makeHarness({ connection: false });
-    apply(ctx as never, { stateFile: join(directory, "state.json"), sessionsRoot: directory });
+    apply(ctx as never, { stateFile: join(directory, "state.json") });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(routes.size).toBe(0);
     expect(providerNames).toEqual([]);
@@ -403,7 +335,6 @@ describe("toolkit plugin entry", () => {
     const { ctx, warns } = makeHarness();
     apply(ctx as never, {
       stateFile: join(tmpdir(), "dsh-toolkit-unwritable\u0000", "state.json"),
-      sessionsRoot: join(tmpdir(), "dsh-toolkit-unwritable"),
     });
     await vi.waitFor(() => expect(warns).toHaveBeenCalled());
   });
@@ -411,8 +342,8 @@ describe("toolkit plugin entry", () => {
   it("unwinds the provider on plugin dispose", async () => {
     const directory = await tempDir();
     const { ctx, routes, providerNames, disposers } = makeHarness();
-    apply(ctx as never, { stateFile: join(directory, "state.json"), sessionsRoot: directory });
-    await vi.waitFor(() => expect(routes.size).toBe(5));
+    apply(ctx as never, { stateFile: join(directory, "state.json") });
+    await vi.waitFor(() => expect(routes.size).toBe(3));
     await enable(routes, "nested-skill");
     await vi.waitFor(() => expect(providerNames).toEqual(["nested-agents"]));
     for (const dispose of disposers) dispose();
@@ -423,7 +354,7 @@ describe("toolkit plugin entry", () => {
     const { ctx } = makeHarness({ getThrows: true });
     expect(serviceOf(ctx as { get(key: string): unknown }, "connection")).toBeUndefined();
     expect(() =>
-      apply(ctx as never, { stateFile: join(tmpdir(), "x", "state.json"), sessionsRoot: tmpdir() }),
+      apply(ctx as never, { stateFile: join(tmpdir(), "x", "state.json") }),
     ).not.toThrow();
   });
 });

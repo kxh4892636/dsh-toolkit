@@ -25,12 +25,6 @@ describe("ensureToolkitStyles", () => {
     expect(css).toContain("border: .5px solid var(--dsw-alias-settings-card-stroke)");
     expect(css).toContain("background: var(--dsw-alias-settings-card-fill)");
     expect(css).toContain("border-radius: var(--dsw-radius-xl)");
-    // 撤回触发器复刻权限选择的度量与交互态。
-    expect(css).toContain(".dshtk-undo-trigger");
-    expect(css).toContain("var(--dsw-alias-interactive-bg-hover)");
-    expect(css).toContain("var(--dsw-alias-label-dimmed)");
-    // 弹窗正文层级。
-    expect(css).toContain(".dshtk-dialog-preview");
     // 不出现字面色值（token 之外的颜色只允许经由 token 表达式）。
     expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/u);
     expect(css).not.toMatch(/\brgba?\(/u);

@@ -28,7 +28,6 @@ const harness = (services: Record<string, unknown> = {}) => {
         registrations.push({ options, component });
         return () => {};
       },
-      entries: () => [],
     },
     get: (key: string) => services[key],
     effect: (callback: () => (() => void) | void, label?: string) => {
@@ -41,7 +40,7 @@ const harness = (services: Record<string, unknown> = {}) => {
 };
 
 describe("client plugin entry", () => {
-  it("declares the slots service and registers the sidebar trio", async () => {
+  it("declares the slots service and registers the sidebar entries", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("{}", { status: 500 })),
@@ -49,37 +48,32 @@ describe("client plugin entry", () => {
     const { ctx, registrations, injections } = harness();
     expect(inject).toEqual(["slots"]);
     apply(ctx);
-    expect(injections).toEqual([
-      "sidebar.panellist",
-      "main",
-      "conversation.input.right",
-      "conversation.input.dock",
-    ]);
+    expect(injections).toEqual(["sidebar.panellist", "main", "conversation.input.dock"]);
     expect(registrations.map((entry) => entry.options.name)).toEqual([
       "sidebar.panellist",
       "main",
-      "conversation.input.right",
       "conversation.input.dock",
     ]);
     const panellist = registrations[0]?.options;
     expect(panellist).toMatchObject({ id: "toolkit", order: 30, label: "toolkit" });
     expect(registrations[1]?.options).toMatchObject({ key: "toolkit" });
-    expect(registrations[2]?.options).toMatchObject({ id: "toolkit-undo", order: 100 });
-    expect(registrations[3]?.options).toMatchObject({ id: "nano-flow-notes", order: 5 });
+    expect(registrations[2]?.options).toMatchObject({ id: "nano-flow-notes", order: 5 });
   });
 
-  it("publishes the host catalog so the undo button can hide itself", async () => {
+  it("publishes the host catalog to the shared store", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
         Response.json({
-          tools: [{ id: "undo-turn", title: "撤回", description: "d", enabled: false }],
+          tools: [
+            { id: "office-skills", title: "移除 office 技能", description: "d", enabled: false },
+          ],
         }),
       ),
     );
     const { ctx } = harness();
     apply(ctx);
-    await vi.waitFor(() => expect(toolkitClientState.isEnabled("undo-turn")).toBe(false));
+    await vi.waitFor(() => expect(toolkitClientState.isEnabled("office-skills")).toBe(false));
   });
 
   it("keeps the defaults when the host route is unreachable", async () => {
@@ -92,36 +86,8 @@ describe("client plugin entry", () => {
     const { ctx } = harness();
     apply(ctx);
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(toolkitClientState.isEnabled("undo-turn")).toBe(true);
+    expect(toolkitClientState.isEnabled("office-skills")).toBe(true);
     toolkitClientState.reset();
-  });
-
-  it("installs the recalled-row hiding without claiming any slot", () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("{}", { status: 500 })),
-    );
-    const registered: string[] = [];
-    const events = {
-      register: (definition: { kind: string }) => {
-        registered.push(definition.kind);
-        return () => {};
-      },
-      entries: () => [],
-      subscribe: () => () => {},
-    };
-    const { ctx, injections, registrations, effects } = harness({
-      uiConversation: { events },
-    });
-    apply(ctx);
-    // 只装 definition：用户行靠宿主的 messageDefinition 走同一层隐藏，不再抢座位
-    // （抢座位会把宿主 user 行的装饰子槽换成空链，消息来源等装饰会掉）。
-    expect(injections).not.toContain("conversation.chat.node");
-    expect(registrations.map((entry) => entry.options)).not.toContainEqual(
-      expect.objectContaining({ key: "user" }),
-    );
-    expect(registered).toEqual(["toolkit-recall"]);
-    expect(effects).toContain("toolkit: recall hiding");
   });
 
   it("resets the shared store when the plugin unloads", () => {
@@ -133,10 +99,10 @@ describe("client plugin entry", () => {
     apply(ctx);
     expect(effects).toContain("toolkit: client state");
     toolkitClientState.publish([
-      { id: "undo-turn", title: "撤回", description: "d", enabled: false },
+      { id: "office-skills", title: "移除 office 技能", description: "d", enabled: false },
     ]);
     const dispose = ctx.effect(() => () => toolkitClientState.reset());
     dispose();
-    expect(toolkitClientState.isEnabled("undo-turn")).toBe(true);
+    expect(toolkitClientState.isEnabled("office-skills")).toBe(true);
   });
 });

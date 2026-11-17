@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   emptyToolkitState,
-  isSessionId,
   nodeToolkitStateIo,
   parseToolkitState,
   serializeToolkitState,
@@ -30,15 +29,12 @@ describe("parseToolkitState", () => {
     expect(parseToolkitState("   ")).toEqual(emptyToolkitState());
     expect(parseToolkitState("{oops")).toEqual(emptyToolkitState());
     expect(parseToolkitState("null")).toEqual(emptyToolkitState());
-    expect(parseToolkitState('{"tools":[],"pendingDeletes":{}}')).toEqual(emptyToolkitState());
+    expect(parseToolkitState('{"tools":[]}')).toEqual(emptyToolkitState());
   });
 
   it("keeps boolean switches and drops unknown value shapes", () => {
-    const doc = parseToolkitState(
-      '{"tools":{"a":true,"b":false,"c":"yes","d":null},"pendingDeletes":["session-1","../escape"]}',
-    );
+    const doc = parseToolkitState('{"tools":{"a":true,"b":false,"c":"yes","d":null}}');
     expect(doc.tools).toEqual({ a: true, b: false });
-    expect(doc.pendingDeletes).toEqual(["session-1"]);
   });
 });
 
@@ -47,21 +43,8 @@ describe("serializeToolkitState", () => {
     const doc = {
       version: 1,
       tools: { "nested-skill": false },
-      pendingDeletes: ["session-x"],
-      pendingUnarchives: ["session-y"],
-      hiddenSessionIds: ["session-z"],
     };
     expect(parseToolkitState(serializeToolkitState(doc))).toEqual(doc);
-  });
-});
-
-describe("isSessionId", () => {
-  it("accepts session ids and rejects path fragments", () => {
-    expect(isSessionId("session-2f7a-11ee")).toBe(true);
-    expect(isSessionId("..")).toBe(false);
-    expect(isSessionId("a/b")).toBe(false);
-    expect(isSessionId("")).toBe(false);
-    expect(isSessionId(".hidden")).toBe(false);
   });
 });
 
@@ -73,7 +56,7 @@ describe("nodeToolkitStateIo", () => {
 });
 
 describe("ToolkitStateStore", () => {
-  it("loads defaults and persists switches and deletions", async () => {
+  it("loads defaults and persists switches", async () => {
     const io = memoryIo();
     const store = new ToolkitStateStore(io);
     await store.load();
@@ -82,13 +65,6 @@ describe("ToolkitStateStore", () => {
     await store.setTool("nested-skill", false);
     expect(store.snapshot().tools).toEqual({ "nested-skill": false });
     expect(io.text()).toContain('"nested-skill": false');
-
-    await store.addPendingDelete("session-1");
-    await store.addPendingDelete("session-1");
-    expect(store.snapshot().pendingDeletes).toEqual(["session-1"]);
-
-    await store.setPendingDeletes([]);
-    expect(store.snapshot().pendingDeletes).toEqual([]);
   });
 
   it("serializes concurrent writes instead of losing them", async () => {

@@ -1,10 +1,8 @@
 import {
   PANEL_STATUSES,
-  TOOLKIT_HIDDEN_PATH,
   TOOLKIT_NANO_FLOW_NOTES_PATH,
   TOOLKIT_NANO_FLOW_PATH,
   TOOLKIT_STATE_PATH,
-  TOOLKIT_UNDO_PATH,
   type NanoFlowSettings,
   type NanoFlowSettingsRequest,
   type NanoFlowSettingsResponse,
@@ -14,8 +12,6 @@ import {
   type ToolkitStateRequest,
   type ToolkitStateResponse,
   type ToolkitToolInfo,
-  type UndoAvailability,
-  type UndoTurnResponse,
 } from "../contract.js";
 
 /** 宿主路由按文档相对地址挂载，绝对路径要被去掉（同 `api/file` 的用法）。 */
@@ -50,20 +46,6 @@ export const fetchToolkitState = async (
   const tools = parseState(body);
   if (tools === undefined) throw new HostApiError("invalid-response", "unexpected state payload");
   return tools;
-};
-
-/** 读取「已撤回、需要隐藏」的会话 id（宿主会合并存活会话，日志删了也仍被列出）。 */
-export const fetchHiddenSessions = async (signal?: AbortSignal): Promise<readonly string[]> => {
-  try {
-    const response = await send(relative(TOOLKIT_HIDDEN_PATH), optionalSignal(signal));
-    const body = (await readJson(response)) as unknown;
-    const ids = (body as { ids?: unknown } | null)?.ids;
-    if (!Array.isArray(ids)) return [];
-    return ids.filter((entry): entry is string => typeof entry === "string");
-  } catch {
-    // 宿主未升级或路由不可达：当作没有隐藏项。
-    return [];
-  }
 };
 
 /** 写入一个工具的开关，返回新目录。 */
@@ -143,33 +125,6 @@ export const fetchNanoFlowNotes = async (
   );
   const body = (await readJson(response)) as unknown;
   return parseNotesSnapshot(body);
-};
-
-/** 探测某会话能否撤回。 */
-export const fetchUndoAvailability = async (
-  sessionId: string,
-  signal?: AbortSignal,
-): Promise<UndoAvailability> => {
-  const query = `?sessionId=${encodeURIComponent(sessionId)}`;
-  const response = await send(`${relative(TOOLKIT_UNDO_PATH)}${query}`, optionalSignal(signal));
-  const body = (await readJson(response)) as unknown;
-  return parseAvailability(body);
-};
-
-/** 执行撤回。 */
-export const runUndoTurn = async (
-  sessionId: string,
-  signal?: AbortSignal,
-): Promise<UndoTurnResponse> => {
-  const response = await send(relative(TOOLKIT_UNDO_PATH), {
-    ...optionalSignal(signal),
-    method: "POST",
-    body: { sessionId },
-  });
-  const body = (await readJson(response)) as unknown;
-  const result = parseUndoResult(body);
-  if (result === undefined) throw new HostApiError("invalid-response", "unexpected undo payload");
-  return result;
 };
 
 /** `exactOptionalPropertyTypes` 下不能把 undefined 显式塞进可选属性。 */
@@ -269,42 +224,4 @@ const isToolInfo = (value: unknown): value is ToolkitToolInfo => {
     typeof candidate.description === "string" &&
     typeof candidate.enabled === "boolean"
   );
-};
-
-const parseAvailability = (body: unknown): UndoAvailability => {
-  if (typeof body !== "object" || body === null)
-    return { available: false, reason: "invalid-response" };
-  const candidate = body as Partial<UndoAvailability>;
-  const prompt = typeof candidate.prompt === "string" ? candidate.prompt : undefined;
-  return {
-    available: candidate.available === true,
-    ...(typeof candidate.reason === "string" ? { reason: candidate.reason } : {}),
-    ...(prompt === undefined ? {} : { prompt }),
-  };
-};
-
-/**
- * 解析就地撤回的结果：`{boundary, seq, prompt}`。
- *
- * 现有路由把结果平铺在响应体上；同时容忍契约文里写的 `{ok, value}` 信封，
- * 免得宿主换个包装就让客户端整条路径失效。
- * @param body - 响应体。
- * @returns 撤回切点与原文；形状不对时为 undefined。
- */
-const parseUndoResult = (body: unknown): UndoTurnResponse | undefined => {
-  if (typeof body !== "object" || body === null) return undefined;
-  const envelope = body as { ok?: unknown; value?: unknown };
-  const payload =
-    envelope.ok === true && typeof envelope.value === "object" ? envelope.value : body;
-  const candidate = payload as Partial<UndoTurnResponse>;
-  const { boundary, seq } = candidate;
-  if (typeof boundary !== "number" || !Number.isSafeInteger(boundary) || boundary < 0) {
-    return undefined;
-  }
-  if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < boundary) return undefined;
-  return {
-    boundary,
-    seq,
-    prompt: typeof candidate.prompt === "string" ? candidate.prompt : "",
-  };
 };

@@ -7,8 +7,6 @@
  *   卡片用 `--dsw-alias-settings-card-fill/-stroke` + `--dsw-radius-xl` + 0.5px 描边。
  * - 开关：直接复用宿主 `@deepseek-ai/dsh-client-ui-primitives` 的 `Switch`（它自己读
  *   `--dsw-alias-switch-thumb`），不用自绘控件。
- * - 撤回触发器：复刻权限选择（`ui-permission-presets` 的 `.trigger`）的度量与交互态。
- * - 弹窗：复用宿主 `Modal` + `Button`，这里只补正文/预览/错误的文本层级。
  */
 
 const STYLE_ID = "@kxh4892636/dsh-toolkit/toolkit.css";
@@ -159,124 +157,6 @@ const css = `
   padding-top: 4px;
 }
 
-/* ── 撤回触发器：与权限选择 .trigger 同度量 ────────────────────────────── */
-.dshtk-undo-trigger {
-  border-radius: var(--dsw-radius-sm);
-  min-width: 0;
-  max-width: 220px;
-  height: 28px;
-  margin-right: -6px;
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-  background: 0 0;
-  border: none;
-  outline: none;
-  align-items: center;
-  gap: 4px;
-  padding: 0 4px 0 8px;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 20px;
-  display: inline-flex;
-}
-.dshtk-undo-trigger:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-.dshtk-undo-trigger:focus-visible {
-  box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
-}
-.dshtk-undo-trigger:disabled {
-  color: var(--dsw-alias-label-dimmed);
-  cursor: default;
-}
-.dshtk-undo-trigger-icon {
-  flex: none;
-  display: inline-flex;
-}
-.dshtk-undo-trigger-icon svg {
-  width: 14px;
-  height: 14px;
-}
-.dshtk-undo-trigger-label {
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-  overflow: hidden;
-}
-
-/* ── 撤回确认弹窗：复刻宿主 RiskConfirmation 的宽度/滚动/按钮度量 ────────── */
-.dshtk-confirmation {
-  width: min(440px, 100%);
-  max-height: min(calc(100dvh - 48px), 100%);
-  overflow: hidden;
-}
-.dshtk-confirmation-content {
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-.dshtk-dialog-stack {
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-  display: flex;
-}
-.dshtk-dialog-preview {
-  border-radius: var(--dsw-radius-md);
-  background: var(--dsw-alias-bg-layer-3);
-  color: var(--dsw-alias-label-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 160px;
-  overflow: auto;
-  margin: 0;
-  padding: 8px 10px;
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 18px;
-}
-.dshtk-dialog-error {
-  color: var(--dsw-alias-state-warn-label);
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-}
-/* 弹窗动作用宿主 Button；平台模块表缺 Button 时按它的度量兜底（36px / radius-md / 14px 内边距）。 */
-.dshtk-button {
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  height: 36px;
-  padding: 0 14px;
-  border: none;
-  border-radius: var(--dsw-radius-md);
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  font-family: inherit;
-  font-size: 14px;
-  line-height: 22px;
-  cursor: pointer;
-}
-.dshtk-button:disabled {
-  cursor: not-allowed;
-  opacity: .4;
-}
-.dshtk-button-primary {
-  background: var(--dsw-alias-button-primary-fill);
-  color: var(--dsw-alias-label-primary-foreground);
-}
-.dshtk-button-primary:hover:not(:disabled) {
-  background: var(--dsw-alias-button-primary-hover);
-}
-.dshtk-button-outline {
-  border: .5px solid var(--dsw-alias-border-l3);
-  background: transparent;
-}
-.dshtk-button-outline:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
 /* ── ready 面板：输入框上方的可折叠列表 ─────────────────────────────── */
 .dshtk-ready {
   box-sizing: border-box;

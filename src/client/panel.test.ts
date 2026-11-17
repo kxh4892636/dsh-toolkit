@@ -19,7 +19,6 @@ const isSettings = (input: unknown): boolean => String(input).includes("nano-flo
 const catalog = (nestedSkill: boolean, nanoFlow = false) => ({
   tools: [
     { id: "nested-skill", title: "嵌套 skill 发现", description: "desc", enabled: nestedSkill },
-    { id: "undo-turn", title: "撤回", description: "desc", enabled: true },
     { id: "nano-flow", title: "Nano Flow 预设", description: "desc", enabled: nanoFlow },
   ],
 });
@@ -39,7 +38,7 @@ describe("ToolkitPanel", () => {
     render(createElement(ToolkitPanel));
     expect(await screen.findByText("嵌套 skill 发现")).toBeDefined();
     const switches = screen.getAllByRole("switch");
-    expect(switches).toHaveLength(3);
+    expect(switches).toHaveLength(2);
     expect(switches[0]?.getAttribute("aria-checked")).toBe("true");
     expect(toolkitClientState.isEnabled("nested-skill")).toBe(true);
   });
@@ -53,7 +52,7 @@ describe("ToolkitPanel", () => {
     await screen.findByText("嵌套 skill 发现");
     expect(container.querySelector(".dshtk-panel .dshtk-section")).not.toBeNull();
     expect(container.querySelector("h1.dshtk-title")?.textContent).toBe("toolkit");
-    expect(container.querySelectorAll("li.dshtk-row-card")).toHaveLength(3);
+    expect(container.querySelectorAll("li.dshtk-row-card")).toHaveLength(2);
     expect(container.querySelector("code.dshtk-row-tag")?.textContent).toBe("nested-skill");
     expect(container.querySelector(".dshtk-row-actions button[role='switch']")).not.toBeNull();
     const stylesheet = document.querySelector(

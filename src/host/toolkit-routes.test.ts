@@ -4,14 +4,12 @@ import {
   TOOLKIT_NANO_FLOW_NOTES_PATH,
   TOOLKIT_NANO_FLOW_PATH,
   TOOLKIT_STATE_PATH,
-  TOOLKIT_UNDO_PATH,
   type NotesSnapshot,
 } from "../contract.js";
 import { createNanoFlowSettingsStore, type NanoFlowSettingsIo } from "./nano-flow-settings.js";
 import { registerToolkitRoutes, type ToolkitRouteRegistry } from "./toolkit-routes.js";
 import { ToolkitRegistry } from "./toolkit-registry.js";
 import { ToolkitStateStore, type ToolkitStateIo } from "./toolkit-state.js";
-import { UndoUnavailableError } from "./undo/undo-turn.js";
 
 const memoryIo = (): ToolkitStateIo => {
   let text: string | undefined;
@@ -58,13 +56,6 @@ const setup = async () => {
         defaultEnabled: true,
         apply: () => () => {},
       },
-      {
-        id: "undo-turn",
-        title: "撤回",
-        description: "desc",
-        defaultEnabled: true,
-        apply: () => () => {},
-      },
     ],
     store,
     logger: { warn: vi.fn() },
@@ -72,14 +63,6 @@ const setup = async () => {
   await registry.initialize();
   const settings = createNanoFlowSettingsStore(memorySettingsIo(), { warn: vi.fn() });
   await settings.load();
-  const undo = {
-    inspect: vi.fn(() => ({ available: true, prompt: "帮我改一下" })),
-    run: vi.fn(async (_sessionId: string, _anchor?: { messageId?: string; boundary?: number }) => ({
-      boundary: 4,
-      seq: 9,
-      prompt: "帮我改一下",
-    })),
-  };
   const notesSnapshot: NotesSnapshot = {
     planName: "2026-11-08-演示",
     planPath: ".agents/domains/dsh/plans/active/2026-11-08-演示",
@@ -91,8 +74,6 @@ const setup = async () => {
   const dispose = registerToolkitRoutes({
     registry,
     connection,
-    undo,
-    hiddenSessions: () => ["session-gone"],
     nanoFlow: {
       get: () => settings.current(),
       update: (patch: unknown) => settings.update(patch),
@@ -105,7 +86,7 @@ const setup = async () => {
     if (handler === undefined) throw new Error(`route ${path} not registered`);
     return handler(request);
   };
-  return { call, registry, undo, settings, notes, dispose, routes };
+  return { call, registry, settings, notes, dispose, routes };
 };
 
 const request = (
@@ -128,10 +109,7 @@ describe("toolkit routes", () => {
     const response = await call(TOOLKIT_STATE_PATH, request(TOOLKIT_STATE_PATH));
     expect(response.status).toBe(200);
     const body = (await response.json()) as { tools: { id: string; enabled: boolean }[] };
-    expect(body.tools.map((tool) => `${tool.id}:${tool.enabled}`)).toEqual([
-      "nested-skill:true",
-      "undo-turn:true",
-    ]);
+    expect(body.tools.map((tool) => `${tool.id}:${tool.enabled}`)).toEqual(["nested-skill:true"]);
   });
 
   it("toggles a tool and reflects it in the catalog", async () => {
@@ -165,109 +143,6 @@ describe("toolkit routes", () => {
     );
     expect(unknown.status).toBe(400);
     expect(await unknown.json()).toMatchObject({ error: "unknown-tool" });
-  });
-
-  it("inspects undo availability for a session", async () => {
-    const { call, undo } = await setup();
-    const response = await call(
-      TOOLKIT_UNDO_PATH,
-      request(TOOLKIT_UNDO_PATH, {
-        url: `http://127.0.0.1:58683${TOOLKIT_UNDO_PATH}?sessionId=s1`,
-      }),
-    );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ available: true, prompt: "帮我改一下" });
-    expect(undo.inspect).toHaveBeenCalledWith("s1");
-  });
-
-  it("rejects an undo probe without a session id", async () => {
-    const { call } = await setup();
-    const response = await call(TOOLKIT_UNDO_PATH, request(TOOLKIT_UNDO_PATH));
-    expect(response.status).toBe(400);
-  });
-
-  it("runs undo and forwards unavailable reasons", async () => {
-    const { call, undo } = await setup();
-    const ok = await call(
-      TOOLKIT_UNDO_PATH,
-      request(TOOLKIT_UNDO_PATH, { method: "POST", body: { sessionId: "s1" } }),
-    );
-    expect(await ok.json()).toEqual({ boundary: 4, seq: 9, prompt: "帮我改一下" });
-    expect(undo.run).toHaveBeenCalledWith("s1", undefined);
-
-    undo.run.mockRejectedValueOnce(new UndoUnavailableError("no-previous-turn", "no earlier turn"));
-    const failed = await call(
-      TOOLKIT_UNDO_PATH,
-      request(TOOLKIT_UNDO_PATH, { method: "POST", body: { sessionId: "s1" } }),
-    );
-    expect(failed.status).toBe(409);
-    expect(await failed.json()).toMatchObject({ error: "no-previous-turn" });
-  });
-
-  it("forwards the optional recall anchors of the undo request", async () => {
-    const { call, undo } = await setup();
-    await call(
-      TOOLKIT_UNDO_PATH,
-      request(TOOLKIT_UNDO_PATH, {
-        method: "POST",
-        body: { sessionId: "s1", messageId: "m2", boundary: 4 },
-      }),
-    );
-    expect(undo.run).toHaveBeenCalledWith("s1", { messageId: "m2", boundary: 4 });
-
-    await call(
-      TOOLKIT_UNDO_PATH,
-      request(TOOLKIT_UNDO_PATH, { method: "POST", body: { sessionId: "s1", boundary: 3 } }),
-    );
-    expect(undo.run).toHaveBeenLastCalledWith("s1", { boundary: 3 });
-  });
-
-  it("rejects malformed undo bodies", async () => {
-    const { call, undo } = await setup();
-    for (const body of [
-      {},
-      { sessionId: "" },
-      { sessionId: "s1", boundary: "4" },
-      { sessionId: "s1", boundary: -1 },
-      { sessionId: "s1", messageId: 3 },
-    ]) {
-      const response = await call(
-        TOOLKIT_UNDO_PATH,
-        request(TOOLKIT_UNDO_PATH, { method: "POST", body }),
-      );
-      expect(response.status).toBe(400);
-    }
-    expect(undo.run).not.toHaveBeenCalled();
-  });
-
-  it("refuses undo when the tool is disabled", async () => {
-    const { call, registry } = await setup();
-    await registry.setEnabled("undo-turn", false);
-    const response = await call(
-      TOOLKIT_UNDO_PATH,
-      request(TOOLKIT_UNDO_PATH, { method: "POST", body: { sessionId: "s1" } }),
-    );
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ error: "tool-disabled" });
-  });
-
-  it("reports an unsupported host and internal failures", async () => {
-    const { call, undo } = await setup();
-    undo.run.mockRejectedValueOnce(new Error("boom"));
-    const internal = await call(
-      TOOLKIT_UNDO_PATH,
-      request(TOOLKIT_UNDO_PATH, { method: "POST", body: { sessionId: "s1" } }),
-    );
-    expect(internal.status).toBe(500);
-
-    undo.run.mockRejectedValueOnce(
-      new UndoUnavailableError("unsupported-host", "no session control"),
-    );
-    const unsupported = await call(
-      TOOLKIT_UNDO_PATH,
-      request(TOOLKIT_UNDO_PATH, { method: "POST", body: { sessionId: "s1" } }),
-    );
-    expect(await unsupported.json()).toMatchObject({ error: "unsupported-host" });
   });
 
   it("returns the nano-flow notes snapshot for a session", async () => {
@@ -322,7 +197,7 @@ describe("toolkit routes", () => {
 
   it("unregisters all routes on dispose", async () => {
     const { dispose, routes } = await setup();
-    expect(routes.size).toBe(5);
+    expect(routes.size).toBe(3);
     dispose();
     expect(routes.size).toBe(0);
   });
@@ -347,12 +222,5 @@ describe("toolkit routes", () => {
     );
     expect(rejected.status).toBe(400);
     expect(((await rejected.json()) as { error: string }).error).toBe("invalid-settings");
-  });
-
-  it("lists the sessions that must stay hidden on the client", async () => {
-    const { call } = await setup();
-    const response = await call("/api/toolkit/hidden", new Request("http://x/api/toolkit/hidden"));
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ids: ["session-gone"] });
   });
 });
