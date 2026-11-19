@@ -254,7 +254,7 @@ describe("applyNanoFlow", () => {
     const text = sectionText(harness)({ agent });
     expect(text).toContain("项目补充。");
     expect(text).toContain("## 篇幅限制");
-    expect(text).toContain("description ≤ 233 字");
+    expect(text).toContain("description ≤ 144 字");
     expect(text.indexOf("# 领域文档")).toBeLessThan(text.indexOf("项目补充。"));
     expect(text.indexOf("项目补充。")).toBeLessThan(text.indexOf("## 篇幅限制"));
   });

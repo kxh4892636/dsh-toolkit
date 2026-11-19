@@ -213,12 +213,13 @@ describe("settings", () => {
     expect(DEFAULT_NANO_FLOW_SETTINGS).toMatchObject({
       specMaxBytes: 34816,
       noteMaxBytes: 13312,
-      noteDescriptionMaxChars: 233,
+      noteDescriptionMaxChars: 144,
       contextMaxBytes: 91136,
       questionMaxBytes: 13312,
       adrMaxBytes: 8192,
       workflowMaxBytes: 34816,
-      rotateAt: 0.618,
+      guideMaxBytes: 21504,
+      rotateAt: 0.55,
     });
   });
 });

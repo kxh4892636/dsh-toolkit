@@ -18,12 +18,12 @@ describe("buildLimitsText", () => {
     expect(text).not.toContain("具体值：");
     expect(text).toContain("spec.md ≤ 34 KB");
     expect(text).toContain("单条 note ≤ 13 KB");
-    expect(text).toContain("description ≤ 233 字");
+    expect(text).toContain("description ≤ 144 字");
     expect(text).toContain("CONTEXT.md ≤ 89 KB");
     expect(text).toContain("question ≤ 13 KB");
     expect(text).toContain("ADR ≤ 8 KB");
     expect(text).toContain("workflow ≤ 34 KB");
-    expect(text).toContain("GUIDE.md ≤ 13 KB");
+    expect(text).toContain("GUIDE.md ≤ 21 KB");
   });
 
   it("reflects changed settings without changing the rule template", () => {

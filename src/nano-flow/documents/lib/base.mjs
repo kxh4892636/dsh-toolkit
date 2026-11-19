@@ -28,12 +28,12 @@ const ADR_STATUSES = Object.freeze(["proposed", "accepted", "deprecated", "super
 const DEFAULT_LIMITS = Object.freeze({
   specMaxBytes: 34 * 1024,
   noteMaxBytes: 13 * 1024,
-  noteDescriptionMaxChars: 233,
+  noteDescriptionMaxChars: 144,
   contextMaxBytes: 89 * 1024,
   questionMaxBytes: 13 * 1024,
   adrMaxBytes: 8 * 1024,
   workflowMaxBytes: 34 * 1024,
-  guideMaxBytes: 13 * 1024,
+  guideMaxBytes: 21 * 1024,
 });
 
 /** 名称、reason、next_step 的单行长度上限。 */

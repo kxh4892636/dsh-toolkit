@@ -352,12 +352,12 @@ describe("checkWorkspace", () => {
   it("enforces the GUIDE budget from limits", async () => {
     const root = await makeRoot();
     await domain(root, "demo", "演示");
-    await write(root, ".agents/domains/GUIDE.md", "x".repeat(14 * 1024));
+    await write(root, ".agents/domains/GUIDE.md", "x".repeat(22 * 1024));
     const over = checkWorkspace(root);
     expect(over.ok).toBe(false);
     expect(over.errors.some((issue) => issue.message.includes("GUIDE.md"))).toBe(true);
 
-    const raised = checkWorkspace(root, { limits: { guideMaxBytes: 15 * 1024 } });
+    const raised = checkWorkspace(root, { limits: { guideMaxBytes: 23 * 1024 } });
     expect(raised.ok).toBe(true);
   });
 
