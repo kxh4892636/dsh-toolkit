@@ -21,18 +21,41 @@ export interface DreamPlanInput {
   readonly sessions: readonly DreamSessionInput[];
 }
 
-export interface DreamIdlePlan {
-  readonly planPath: string;
-}
-
 export interface DreamDomainInput {
   readonly domain: string;
   readonly plans: readonly DreamPlanInput[];
 }
 
-export interface DreamIdleDomain {
+export interface DreamStoredPlan {
+  readonly planPath: string;
+  readonly lifecycle: "active" | "reference";
+  readonly specStatus: string | null;
+  readonly notesCompleted: number;
+  readonly notesTotal: number;
+  readonly latestModified: string | null;
+  readonly logBytes: number | null;
+}
+
+export interface DreamStockDomain {
   readonly domain: string;
-  readonly plans: readonly DreamIdlePlan[];
+  readonly plans: readonly DreamStoredPlan[];
+}
+
+export interface DreamDocSection {
+  readonly kind: "questions" | "adr" | "workflows";
+  readonly count: number;
+  readonly maxNumber: number | null;
+  readonly hasIndex: boolean;
+}
+
+export interface DreamDocInventory {
+  readonly domain: string;
+  readonly contextBytes: number | null;
+  readonly contextModified: string | null;
+  readonly sections: readonly DreamDocSection[];
+  readonly guideModified: string | null;
+  readonly latestPlanModified: string | null;
+  readonly stale: boolean;
 }
 
 export interface DreamSessionCursor {
@@ -71,7 +94,8 @@ export interface DreamScanReport {
   readonly statePath: string;
   readonly state: DreamState;
   readonly domains: readonly DreamDomainInput[];
-  readonly idle: readonly DreamIdleDomain[];
+  readonly inventory: readonly DreamStockDomain[];
+  readonly docs: readonly DreamDocInventory[];
   readonly warnings: readonly DreamWarning[];
 }
 

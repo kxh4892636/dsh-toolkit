@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * dream 输入扫描：按「Plan + 会话」游标列出新 turn，并负责游标的读写。
+ * dream 输入扫描：按「Plan + 会话」游标列出新 turn，并盘点存量 Plan 与领域文档。
  *
  * 为什么按会话分游标：log.jsonl 里每个 turn 的 seq 来自宿主会话事件流，
  * 换会话后会从 4 重新开始；只按 Plan 记 lastSeq 会把新会话的 turn 全跳过。
@@ -13,7 +13,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const LIFECYCLES = ["active", "reference", "archived"];
+// 不扫 archived：迁 archived 是人工决定，之前的增量可丢。
+const LIFECYCLES = ["active", "reference"];
+const DOMAIN_DOC_KINDS = ["questions", "adr", "workflows"];
+const NUMBERED_ENTRY = /^(\d{3})-/u;
+const NOTE_FILE = /^\d{3}-.*\.md$/u;
 const DEFAULT_DOMAINS = ".agents/domains";
 const STATE_RELATIVE = path.join("toolkit", "nano-flow-dream.json");
 const STATE_VERSION = 2;
@@ -30,6 +34,33 @@ const listDirectories = (directory) => {
   } catch {
     return [];
   }
+};
+
+const listEntries = (directory) => {
+  try {
+    return fs.readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+};
+
+const statOf = (file) => {
+  try {
+    return fs.statSync(file);
+  } catch {
+    return undefined;
+  }
+};
+
+const mtimeOf = (file) => statOf(file)?.mtime.toISOString() ?? null;
+
+const sizeOf = (file) => statOf(file)?.size ?? null;
+
+/** 只取头里的 status 标量：scan 是盘点不是校验，坏头按缺失处理。 */
+const statusOf = (file) => {
+  if (!fs.existsSync(file)) return null;
+  const head = fs.readFileSync(file, "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---/u)?.[1] ?? "";
+  return head.match(/^status:\s*"?(.+?)"?\s*$/mu)?.[1] ?? null;
 };
 
 const defaultStatePath = () => {
@@ -165,10 +196,72 @@ const scanPlan = (rootDir, planDirectory, state) => {
 /** 一个 Plan 里被跳过的记录总数。 */
 const totalSkipped = (skipped) => skipped.malformed + skipped.unknown + skipped.invalidTurn;
 
+/** 存量 Plan：不看有没有新 turn，只看目录里的事实。 */
+const storedPlan = (planDirectory, planPath, lifecycle) => {
+  let notesCompleted = 0;
+  let notesTotal = 0;
+  let latestModified = null;
+  for (const entry of listEntries(planDirectory)) {
+    if (!entry.isFile()) continue;
+    const modified = mtimeOf(path.join(planDirectory, entry.name));
+    if (modified !== null && (latestModified === null || modified > latestModified)) {
+      latestModified = modified;
+    }
+    if (!NOTE_FILE.test(entry.name)) continue;
+    notesTotal += 1;
+    if (statusOf(path.join(planDirectory, entry.name)) === "completed") notesCompleted += 1;
+  }
+  return {
+    planPath,
+    lifecycle,
+    specStatus: statusOf(path.join(planDirectory, "spec.md")),
+    notesCompleted,
+    notesTotal,
+    latestModified,
+    logBytes: sizeOf(path.join(planDirectory, "log.jsonl")),
+  };
+};
+
+/** 一个文档目录的条目数、最大编号与 index 是否存在；workflows 的条目是子目录。 */
+const docSection = (directory, kind) => {
+  let count = 0;
+  let maxNumber = 0;
+  for (const entry of listEntries(directory)) {
+    const match = NUMBERED_ENTRY.exec(entry.name);
+    if (match === null || (!entry.isDirectory() && !entry.name.endsWith(".md"))) continue;
+    count += 1;
+    maxNumber = Math.max(maxNumber, Number(match[1]));
+  }
+  return {
+    kind,
+    count,
+    maxNumber: count === 0 ? null : maxNumber,
+    hasIndex: fs.existsSync(path.join(directory, "index.md")),
+  };
+};
+
+/** 领域文档盘点与落差：最新 Plan 的日期晚于 CONTEXT，说明有结论没上浮。按天比，免得同日几分钟的改动刷成落差。 */
+const docInventory = (domainsRoot, domain, latestPlanModified) => {
+  const domainDirectory = path.join(domainsRoot, domain);
+  const contextModified = mtimeOf(path.join(domainDirectory, "CONTEXT.md"));
+  return {
+    domain,
+    contextBytes: sizeOf(path.join(domainDirectory, "CONTEXT.md")),
+    contextModified,
+    sections: DOMAIN_DOC_KINDS.map((kind) => docSection(path.join(domainDirectory, kind), kind)),
+    guideModified: mtimeOf(path.join(domainsRoot, "GUIDE.md")),
+    latestPlanModified,
+    stale:
+      latestPlanModified !== null &&
+      (contextModified === null || day(contextModified) < day(latestPlanModified)),
+  };
+};
+
 /**
- * 扫描工作区，返回按域分组的输入清单。
+ * 扫描工作区，返回按域分组的新 turn、存量 Plan 与领域文档盘点。
  * @param {{rootDir?: string, domainsPath?: string, statePath?: string}} [options]
- * @returns {{rootDir: string, statePath: string, state: object, domains: object[], idle: object[]}}
+ * @returns {{rootDir: string, statePath: string, state: object, domains: object[],
+ *   inventory: object[], docs: object[]}}
  */
 const scanDreamInput = (options = {}) => {
   const rootDir = options.rootDir ?? process.cwd();
@@ -179,27 +272,39 @@ const scanDreamInput = (options = {}) => {
     ? domainsPath
     : path.resolve(rootDir, domainsPath);
   const state = readState(statePath);
-  const report = { rootDir, statePath, state, domains: [], idle: [], warnings: [] };
+  const report = {
+    rootDir,
+    statePath,
+    state,
+    domains: [],
+    inventory: [],
+    docs: [],
+    warnings: [],
+  };
   for (const domain of listDirectories(domainsRoot)) {
     const plans = [];
-    const idle = [];
+    const stored = [];
     for (const lifecycle of LIFECYCLES) {
       for (const planName of listDirectories(path.join(domainsRoot, domain, "plans", lifecycle))) {
-        const scanned = scanPlan(
-          rootDir,
-          path.join(domainsRoot, domain, "plans", lifecycle, planName),
-          state,
-        );
+        const planDirectory = path.join(domainsRoot, domain, "plans", lifecycle, planName);
+        // 存量按目录枚举（与 ls 一致）：老 Plan 没有 log.jsonl，仍要盘点。
+        const planPath = path.relative(rootDir, planDirectory).split(path.sep).join("/");
+        stored.push(storedPlan(planDirectory, planPath, lifecycle));
+        const scanned = scanPlan(rootDir, planDirectory, state);
         if (scanned === null) continue;
         if (totalSkipped(scanned.skipped) > 0) {
           report.warnings.push({ planPath: scanned.planPath, skipped: scanned.skipped });
         }
         if (scanned.sessions.some((session) => session.turns.length > 0)) plans.push(scanned);
-        else idle.push({ planPath: scanned.planPath });
       }
     }
     if (plans.length > 0) report.domains.push({ domain, plans });
-    if (idle.length > 0) report.idle.push({ domain, plans: idle });
+    if (stored.length > 0) report.inventory.push({ domain, plans: stored });
+    const latestPlanModified = stored.reduce((max, plan) => {
+      if (plan.latestModified === null) return max;
+      return max === null || plan.latestModified > max ? plan.latestModified : max;
+    }, null);
+    report.docs.push(docInventory(domainsRoot, domain, latestPlanModified));
   }
   return report;
 };
@@ -260,6 +365,77 @@ const formatSession = (session) => {
   return lines;
 };
 
+const day = (iso) => (iso === null ? "无" : iso.slice(0, 10));
+
+const kb = (bytes) => (bytes === null ? "无" : Math.round(bytes / 1024) + " KB");
+
+const padded = (value) => (value === null ? "—" : String(value).padStart(3, "0"));
+
+/** 存量 Plan 段：每域全部 active + reference，不论有没有新 turn。 */
+const formatStock = (report) => {
+  const lines = ["", "## 存量 Plan（active + reference，全部）"];
+  for (const group of report.inventory) {
+    lines.push("", "### " + group.domain + "（" + group.plans.length + " 个）");
+    for (const plan of group.plans) {
+      const spec = plan.specStatus ?? "—";
+      const notes = plan.notesCompleted + "/" + plan.notesTotal;
+      lines.push(
+        "- " +
+          plan.planPath +
+          "｜" +
+          plan.lifecycle +
+          "｜spec " +
+          spec +
+          "｜note " +
+          notes +
+          "｜最近改动 " +
+          day(plan.latestModified) +
+          "｜log " +
+          kb(plan.logBytes),
+      );
+    }
+  }
+  return lines;
+};
+
+/** 领域文档盘点段：容量、编号进度、索引齐备度与落差标记。 */
+const formatDocs = (report) => {
+  const lines = ["", "## 领域文档盘点"];
+  for (const docs of report.docs) {
+    const sections = docs.sections
+      .map(
+        (section) => section.kind + " " + section.count + "（≤" + padded(section.maxNumber) + "）",
+      )
+      .join("/");
+    const indexes = docs.sections.filter((section) => section.hasIndex).length;
+    lines.push("", "### " + docs.domain);
+    lines.push(
+      "- CONTEXT " +
+        kb(docs.contextBytes) +
+        "（" +
+        day(docs.contextModified) +
+        "）；" +
+        sections +
+        "；index " +
+        indexes +
+        "/" +
+        docs.sections.length +
+        "；GUIDE " +
+        (docs.guideModified === null ? "无" : "有"),
+    );
+    lines.push(
+      docs.stale
+        ? "- 域文档可能落后：是（最新 Plan " +
+            day(docs.latestPlanModified) +
+            " > CONTEXT " +
+            day(docs.contextModified) +
+            "）"
+        : "- 域文档可能落后：否",
+    );
+  }
+  return lines;
+};
+
 const formatReport = (report) => {
   const lines = ["# dream 输入", ""];
   lines.push("- 工作区：" + report.rootDir);
@@ -270,18 +446,15 @@ const formatReport = (report) => {
         ? "（不存在、为空或旧 v1，本次按全量处理）"
         : ""),
   );
-  if (report.domains.length === 0) {
-    lines.push("", "没有新增 turn。");
-  } else {
-    lines.push("", "## 有新增的域（" + report.domains.length + "）");
-    for (const group of report.domains) {
-      lines.push("", "### " + group.domain + "（" + group.plans.length + " 个 Plan）");
-      for (const plan of group.plans) {
-        lines.push("", "#### " + plan.planPath);
-        for (const session of plan.sessions) {
-          if (session.turns.length === 0) continue;
-          lines.push(...formatSession(session));
-        }
+  if (report.domains.length === 0)
+    lines.push("", "- 新证据：无（本轮按存量 Plan 与领域文档盘点维护）");
+  for (const group of report.domains) {
+    lines.push("", "## 新证据：" + group.domain + "（" + group.plans.length + " 个 Plan）");
+    for (const plan of group.plans) {
+      lines.push("", "#### " + plan.planPath);
+      for (const session of plan.sessions) {
+        if (session.turns.length === 0) continue;
+        lines.push(...formatSession(session));
       }
     }
   }
@@ -302,12 +475,8 @@ const formatReport = (report) => {
     }
     lines.push("  可能不是 dsh 轨迹（例如 pi 的 run 记录）或格式已变；这些记录不会被处理。");
   }
-  if (report.idle.length > 0) {
-    lines.push("", "## 无新增（只读）");
-    for (const group of report.idle) {
-      lines.push("- " + group.domain + "：" + group.plans.length + " 个 Plan");
-    }
-  }
+  lines.push(...formatStock(report));
+  lines.push(...formatDocs(report));
   lines.push(
     "",
     "处理完、nano_flow_check 通过、git commit 成功后推进游标（只推进成功的 Plan + 会话）：",

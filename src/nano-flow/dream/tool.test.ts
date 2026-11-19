@@ -102,7 +102,7 @@ describe("nano_flow_dream", () => {
     };
     expect(state.plans[PLAN_PATH]?.sessions["session-a"]?.lastSeq).toBe(533);
     const output = String(await dream.execute({ action: "scan", statePath }, exec));
-    expect(output).toContain("没有新增 turn");
+    expect(output).toContain("新证据：无");
   });
 
   it("rejects unknown actions and malformed marks", async () => {
