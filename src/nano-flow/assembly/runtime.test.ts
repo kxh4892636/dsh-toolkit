@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { DEFAULT_NANO_FLOW_SETTINGS } from "../../contract.js";
 import {
   assetsCheckScript,
-  assetsDreamPromptPath,
   assetsSkillsRoot,
   assetsTemplatesRoot,
   locateAssetsRoot,
@@ -80,15 +79,17 @@ describe("assets", () => {
     expect((await stat(join(templatesRoot, "spec.md"))).isFile()).toBe(true);
     expect((await stat(join(templatesRoot, "guide.md"))).isFile()).toBe(true);
     expect((await stat(assetsCheckScript(assetsRoot))).isFile()).toBe(true);
-    const dream = await readFile(assetsDreamPromptPath(assetsRoot), "utf8");
+    const skillsRoot = assetsSkillsRoot(assetsRoot);
+    const dream = await readFile(join(skillsRoot, "dream", "SKILL.md"), "utf8");
+    expect(dream).toContain("disable-model-invocation: true");
     expect(dream).toContain("nano_flow_dream");
     expect(dream).toContain("python3");
     expect(dream).toContain("subagent");
-    const provider = createAssetSkillProvider(assetsSkillsRoot(assetsRoot));
+    const provider = createAssetSkillProvider(skillsRoot);
     const listed = await provider.list({ signal: new AbortController().signal });
     const names = Array.isArray(listed) ? listed.map((candidate) => candidate.name) : [];
     expect(names).toEqual(
-      expect.arrayContaining(["to-skill", "code-spec", "learning", "ponytail"]),
+      expect.arrayContaining(["to-skill", "code-spec", "learning", "ponytail", "dream"]),
     );
   });
 });

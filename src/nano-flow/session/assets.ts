@@ -12,7 +12,6 @@ const ASSETS = {
   system: ["prompts/system.md", "session/prompts/system.md"],
   user: ["prompts/user.md", "session/prompts/user.md"],
   limit: ["prompts/limit.md", "session/prompts/limit.md"],
-  dream: ["prompts/dream.md", "dream/prompt.md"],
   templates: ["templates", "documents/templates"],
   skills: ["skills", "skills"],
   checkScript: ["scripts/check-domain.mjs", "documents/check-domain.mjs"],
@@ -59,10 +58,6 @@ export const readUserPromptText = (assetsRoot: string): string =>
 /** 读取篇幅限制的静态模板；具体值由 `limits.ts` 追加。 */
 export const readLimitTemplate = (assetsRoot: string): string =>
   readFileSync(pickAsset(assetsRoot, ASSETS.limit), "utf8").trim();
-
-/** dream 任务的完整提示词路径。 */
-export const assetsDreamPromptPath = (assetsRoot: string): string =>
-  pickAsset(assetsRoot, ASSETS.dream);
 
 /** 动态注入的 skill 根目录。 */
 export const assetsSkillsRoot = (assetsRoot: string): string =>

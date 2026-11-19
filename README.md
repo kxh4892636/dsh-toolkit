@@ -175,7 +175,8 @@ metadata:
   行数不再限制；静态规则在 `prompts/limit.md`，具体值由脚本追加，启动时生成
   「篇幅限制」块拼在 `prompts/system.md` + `GUIDE.md` 之后注入。压缩与拆分规则统一
   由 `prompts/limit.md` 维护。
-- 记忆维护由 **dream** 承担：`prompts/dream.md` 是投递给自动化任务的完整指令（每天 08:00 默认新建会话执行）；
+- 记忆维护由 **dream** 承担：`skills/dream/SKILL.md` 是随包技能（`disable-model-invocation`，只能人工或定时任务点名调用）；
+  宿主每天 08:00 的定时任务只投一句「调用 dream 技能」，指令本体在技能里；
   输入由 `nano_flow_dream` 工具的 `scan` 提供（实现是随包 `scripts/dream-scan.mjs`，
   按「Plan + 会话」记游标于 `$DSH_HOME/toolkit/nano-flow-dream.json`），只输出新 turn；
   dream 处理后跑 check 并 commit，成功后用同工具的 `mark` 推进游标。五 pass 写回领域文档与 `GUIDE.md`。互链写在页面文末

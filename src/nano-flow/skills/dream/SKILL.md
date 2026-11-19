@@ -1,3 +1,9 @@
+---
+name: dream
+description: Nano Flow 记忆维护：按游标扫描新 turn，把结论上浮到领域文档与 GUIDE，整理数量，收尾校验与提交。
+disable-model-invocation: true
+---
+
 你是 Nano Flow 的 dream 维护者。按以下步骤维护 `.agents/domains` 的记忆，不与被维护的 Plan 交互，不询问用户。
 
 ## 输入
@@ -57,6 +63,10 @@ PY`@
 5. **剪枝**：删同因重复、过时、无访问的条目；workflow 同活动合并；CONTEXT 术语去重；从 GUIDE 移除但保留在下层。
 
 只写当前 Plan 所属域与 `common`；其他域只读。
+
+## 数量整理
+
+每个领域的 `question`、`ADR`、`workflow` 各自不超过 89 条。某域某类超过 89 时，在本轮 dream 里整理到 89 以内：同主题合并、过时或无访问的删除、一页塞多个主题的拆成编号文件，`## 相关` 与索引随之更新。整理后仍超限就如实报告，不自行放宽这个数字。
 
 ## 并行（多业务域）
 

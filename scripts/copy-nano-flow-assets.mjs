@@ -10,7 +10,6 @@ const source = join(root, "src", "nano-flow");
 const target = join(root, "dist", "nano-flow");
 const entries = [
   { from: "session/prompts", to: "prompts" },
-  { from: "dream/prompt.md", to: "prompts/dream.md" },
   { from: "documents/templates", to: "templates" },
   { from: "skills", to: "skills" },
   { from: "documents/check-domain.mjs", to: "scripts/check-domain.mjs" },
