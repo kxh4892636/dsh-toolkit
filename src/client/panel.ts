@@ -54,10 +54,6 @@ const toDisplay = (value: number, scale: number): string => {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value / scale);
 };
 
-/** 某个字段默认值在界面上的文本。 */
-const defaultText = (field: SettingField): string =>
-  toDisplay(DEFAULT_NANO_FLOW_SETTINGS[field.key], field.scale);
-
 /** 标题右侧的单位说明。 */
 const unitTitle = (unit: string): string => {
   if (unit === "KB") return "大小/KB";
@@ -161,14 +157,15 @@ export const ToolkitPanel: FC = () => {
     setDraft((current) => ({ ...current, [key]: value }));
   }, []);
 
-  /** 整组恢复默认：只填回草稿，落盘仍由「保存」负责。 */
   const restoreAll = useCallback((): void => {
     setDraft(toDraft(DEFAULT_NANO_FLOW_SETTINGS));
   }, []);
 
-  /** 单字段恢复默认：只替换这一格，其他草稿保持用户输入。 */
   const restoreField = useCallback((field: SettingField): void => {
-    setDraft((current) => ({ ...current, [field.key]: defaultText(field) }));
+    setDraft((current) => ({
+      ...current,
+      [field.key]: toDisplay(DEFAULT_NANO_FLOW_SETTINGS[field.key], field.scale),
+    }));
   }, []);
 
   const save = useCallback((): void => {
@@ -248,7 +245,7 @@ const renderSettings = (settings: SettingsProps) => {
       { className: "dshtk-field-grid" },
       ...SETTING_FIELDS.map((field) =>
         createElement(
-          "label",
+          "div",
           { key: field.key, className: "dshtk-field" },
           createElement(
             "span",
@@ -268,24 +265,14 @@ const renderSettings = (settings: SettingsProps) => {
                 onChange(field.key, event.target.value),
             }),
             createElement(
-              Tooltip,
-              { label: `恢复默认：${field.label}`, side: "top" as const, portal: true },
-              createElement(
-                "button",
-                {
-                  type: "button",
-                  className: "dshtk-field-reset",
-                  "aria-label": `恢复默认：${field.label}`,
-                  disabled: saving,
-                  // 在 label 里点按钮会连带激活输入框，这里截断默认行为。
-                  onClick: (event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    onRestoreField(field);
-                  },
-                },
-                createElement(IconRefreshOutlineRegular, { size: 14 }),
-              ),
+              "button",
+              {
+                type: "button",
+                className: "dshtk-field-reset",
+                title: `恢复默认：${field.label}`,
+                onClick: () => onRestoreField(field),
+              },
+              createElement(IconRefreshOutlineRegular, { size: 14 }),
             ),
           ),
         ),
@@ -296,7 +283,7 @@ const renderSettings = (settings: SettingsProps) => {
       { className: "dshtk-actions" },
       createElement(
         Button,
-        { variant: "outline" as const, type: "button", disabled: saving, onClick: onRestoreAll },
+        { variant: "outline" as const, type: "button", onClick: onRestoreAll },
         "恢复默认",
       ),
       createElement(

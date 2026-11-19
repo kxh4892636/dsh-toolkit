@@ -169,11 +169,6 @@ const css = `
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
 }
-.dshtk-field-reset:disabled {
-  background: transparent;
-  color: var(--dsw-alias-label-dimmed);
-  cursor: default;
-}
 /* 宽度交给面板网格；外观由宿主 Input 自己负责。
    宿主 Input 可能是「外层容器 + 内层 input」两层结构，两层的盒模型都要压住。 */
 .dshtk-input,
