@@ -39,6 +39,11 @@ describe("parseNanoFlowSettings", () => {
     expect(() => parseNanoFlowSettings({ rotateAt: 1.2 })).toThrow(/rotateAt/u);
   });
 
+  it("accepts and validates the GUIDE budget", () => {
+    expect(parseNanoFlowSettings({ guideMaxBytes: 2048 }).guideMaxBytes).toBe(2048);
+    expect(() => parseNanoFlowSettings({ guideMaxBytes: 0 })).toThrow(/guideMaxBytes/u);
+  });
+
   it("ignores unknown legacy fields", () => {
     const next = parseNanoFlowSettings({
       storyMaxBytes: 1,

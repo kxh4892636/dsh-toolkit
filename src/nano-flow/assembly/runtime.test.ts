@@ -222,6 +222,13 @@ describe("settings", () => {
       rotateAt: 0.55,
     });
   });
+
+  it("keeps the script fallback limits aligned with the contract", async () => {
+    const { DEFAULT_LIMITS } = await import("../documents/lib/base.mjs");
+    const limits: Record<string, number> = { ...DEFAULT_NANO_FLOW_SETTINGS };
+    delete limits["rotateAt"];
+    expect(DEFAULT_LIMITS).toEqual(limits);
+  });
 });
 
 describe("tools", () => {

@@ -74,6 +74,7 @@ const SETTING_KEYS = [
   "questionMaxBytes",
   "adrMaxBytes",
   "workflowMaxBytes",
+  "guideMaxBytes",
   "rotateAt",
 ] as const;
 

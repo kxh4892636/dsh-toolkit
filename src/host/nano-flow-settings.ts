@@ -15,6 +15,7 @@ const INTEGER_KEYS = [
   "questionMaxBytes",
   "adrMaxBytes",
   "workflowMaxBytes",
+  "guideMaxBytes",
 ] as const;
 
 /**
