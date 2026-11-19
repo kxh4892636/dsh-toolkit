@@ -2,11 +2,17 @@ import { createElement, useCallback, useEffect, useState, type FC } from "react"
 import {
   Button,
   IconChevronDownOutlineRegular,
+  IconRefreshOutlineRegular,
   Input,
   Switch,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
-import { TOOL_IDS, type NanoFlowSettings, type ToolkitToolInfo } from "../contract.js";
+import {
+  DEFAULT_NANO_FLOW_SETTINGS,
+  TOOL_IDS,
+  type NanoFlowSettings,
+  type ToolkitToolInfo,
+} from "../contract.js";
 import {
   fetchNanoFlowSettings,
   fetchToolkitState,
@@ -40,11 +46,17 @@ const SETTING_FIELDS: readonly {
   { key: "rotateAt", label: "轮转阈值", unit: "比例", scale: 1, integer: false },
 ];
 
+type SettingField = (typeof SETTING_FIELDS)[number];
+
 /** 存储值 → 界面文本；KB 带千分位并保留两位小数。 */
 const toDisplay = (value: number, scale: number): string => {
   if (scale === 1) return String(value);
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value / scale);
 };
+
+/** 某个字段默认值在界面上的文本。 */
+const defaultText = (field: SettingField): string =>
+  toDisplay(DEFAULT_NANO_FLOW_SETTINGS[field.key], field.scale);
 
 /** 标题右侧的单位说明。 */
 const unitTitle = (unit: string): string => {
@@ -149,6 +161,16 @@ export const ToolkitPanel: FC = () => {
     setDraft((current) => ({ ...current, [key]: value }));
   }, []);
 
+  /** 整组恢复默认：只填回草稿，落盘仍由「保存」负责。 */
+  const restoreAll = useCallback((): void => {
+    setDraft(toDraft(DEFAULT_NANO_FLOW_SETTINGS));
+  }, []);
+
+  /** 单字段恢复默认：只替换这一格，其他草稿保持用户输入。 */
+  const restoreField = useCallback((field: SettingField): void => {
+    setDraft((current) => ({ ...current, [field.key]: defaultText(field) }));
+  }, []);
+
   const save = useCallback((): void => {
     const patch: Record<string, number> = {};
     for (const field of SETTING_FIELDS) {
@@ -203,6 +225,8 @@ export const ToolkitPanel: FC = () => {
                       error: settingsError,
                       onChange: updateField,
                       onSave: save,
+                      onRestoreAll: restoreAll,
+                      onRestoreField: restoreField,
                       ready: settings !== undefined,
                     }
                   : undefined,
@@ -213,13 +237,8 @@ export const ToolkitPanel: FC = () => {
   );
 };
 
-const renderSettings = (
-  draft: Draft,
-  saving: boolean,
-  error: string | undefined,
-  onChange: (key: keyof NanoFlowSettings, value: string) => void,
-  onSave: () => void,
-) => {
+const renderSettings = (settings: SettingsProps) => {
+  const { draft, saving, error, onChange, onSave, onRestoreAll, onRestoreField } = settings;
   return createElement(
     "div",
     { className: "dshtk-settings" },
@@ -236,21 +255,50 @@ const renderSettings = (
             { className: "dshtk-field-label" },
             `${field.label}（${unitTitle(field.unit)}）`,
           ),
-          createElement(Input, {
-            className: "dshtk-input",
-            type: "text",
-            inputMode: "decimal" as const,
-            value: draft[field.key] ?? "",
-            "aria-label": `${field.label} ${field.unit}`,
-            onChange: (event: { target: { value: string } }) =>
-              onChange(field.key, event.target.value),
-          }),
+          createElement(
+            "span",
+            { className: "dshtk-field-control" },
+            createElement(Input, {
+              className: "dshtk-input",
+              type: "text",
+              inputMode: "decimal" as const,
+              value: draft[field.key] ?? "",
+              "aria-label": `${field.label} ${field.unit}`,
+              onChange: (event: { target: { value: string } }) =>
+                onChange(field.key, event.target.value),
+            }),
+            createElement(
+              Tooltip,
+              { label: `恢复默认：${field.label}`, side: "top" as const, portal: true },
+              createElement(
+                "button",
+                {
+                  type: "button",
+                  className: "dshtk-field-reset",
+                  "aria-label": `恢复默认：${field.label}`,
+                  disabled: saving,
+                  // 在 label 里点按钮会连带激活输入框，这里截断默认行为。
+                  onClick: (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onRestoreField(field);
+                  },
+                },
+                createElement(IconRefreshOutlineRegular, { size: 14 }),
+              ),
+            ),
+          ),
         ),
       ),
     ),
     createElement(
       "div",
       { className: "dshtk-actions" },
+      createElement(
+        Button,
+        { variant: "outline" as const, type: "button", disabled: saving, onClick: onRestoreAll },
+        "恢复默认",
+      ),
       createElement(
         Button,
         { variant: "primary", type: "button", disabled: saving, onClick: onSave },
@@ -268,6 +316,8 @@ interface SettingsProps {
   readonly error: string | undefined;
   readonly onChange: (key: keyof NanoFlowSettings, value: string) => void;
   readonly onSave: () => void;
+  readonly onRestoreAll: () => void;
+  readonly onRestoreField: (field: SettingField) => void;
   readonly ready: boolean;
 }
 
@@ -324,13 +374,7 @@ const renderRow = (
           "div",
           { className: "dshtk-settings-popover", role: "group", "aria-label": "Nano Flow 上限" },
           settings.ready
-            ? renderSettings(
-                settings.draft,
-                settings.saving,
-                settings.error,
-                settings.onChange,
-                settings.onSave,
-              )
+            ? renderSettings(settings)
             : createElement("p", { className: "dshtk-row-hint" }, "正在读取设置…"),
         )
       : null,

@@ -67,6 +67,12 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
     className?: string;
   }>;
 
+  /** 描边图标：循环箭头；面板用它表示「恢复默认」。 */
+  export const IconRefreshOutlineRegular: import("react").ComponentType<{
+    size?: number;
+    className?: string;
+  }>;
+
   /** 14px 清单图标（Todo 面板标题同款）。 */
   export const IconChecklistOutline14: import("react").ComponentType<{
     size?: number;

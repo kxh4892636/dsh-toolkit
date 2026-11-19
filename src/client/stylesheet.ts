@@ -140,6 +140,40 @@ const css = `
   font-size: 13px;
   line-height: 20px;
 }
+/* 输入框右侧的恢复默认图标：宿主 Input 只有前置 icon，这里自己贴一个，
+   内层 input 让出右内边距，文字不压到图标。 */
+.dshtk-field-control {
+  position: relative;
+  display: block;
+}
+.dshtk-field-control input {
+  padding-right: 22px;
+}
+.dshtk-field-reset {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  transform: translateY(-50%);
+  place-items: center;
+  cursor: pointer;
+}
+.dshtk-field-reset:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.dshtk-field-reset:disabled {
+  background: transparent;
+  color: var(--dsw-alias-label-dimmed);
+  cursor: default;
+}
 /* 宽度交给面板网格；外观由宿主 Input 自己负责。
    宿主 Input 可能是「外层容器 + 内层 input」两层结构，两层的盒模型都要压住。 */
 .dshtk-input,

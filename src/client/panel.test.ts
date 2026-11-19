@@ -158,6 +158,57 @@ describe("ToolkitPanel", () => {
     expect(patch.specMaxBytes).toBe(1024000);
   });
 
+  it("restores every field to the defaults without writing the host", async () => {
+    const posts: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        if (isSettings(input)) {
+          if (init?.method === "POST") posts.push(JSON.parse(init.body as string));
+          return json(settingsResponse);
+        }
+        return json(catalog(true, true));
+      }),
+    );
+    render(createElement(ToolkitPanel));
+    fireEvent.click(await screen.findByRole("button", { name: "Nano Flow 设置" }));
+    const spec = (await screen.findByLabelText("spec.md KB")) as HTMLInputElement;
+    const rotate = (await screen.findByLabelText("轮转阈值 比例")) as HTMLInputElement;
+    fireEvent.change(spec, { target: { value: "2" } });
+    fireEvent.change(rotate, { target: { value: "0.7" } });
+    fireEvent.click(screen.getByRole("button", { name: "恢复默认" }));
+    expect(spec.value).toBe(String(DEFAULT_NANO_FLOW_SETTINGS.specMaxBytes / 1024));
+    expect(rotate.value).toBe(String(DEFAULT_NANO_FLOW_SETTINGS.rotateAt));
+    expect((screen.getByLabelText("描述字数 字") as HTMLInputElement).value).toBe(
+      String(DEFAULT_NANO_FLOW_SETTINGS.noteDescriptionMaxChars),
+    );
+    expect(posts).toHaveLength(0);
+  });
+
+  it("restores one field from its in-field icon and keeps the other drafts", async () => {
+    const posts: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        if (isSettings(input)) {
+          if (init?.method === "POST") posts.push(JSON.parse(init.body as string));
+          return json(settingsResponse);
+        }
+        return json(catalog(true, true));
+      }),
+    );
+    render(createElement(ToolkitPanel));
+    fireEvent.click(await screen.findByRole("button", { name: "Nano Flow 设置" }));
+    const spec = (await screen.findByLabelText("spec.md KB")) as HTMLInputElement;
+    const rotate = (await screen.findByLabelText("轮转阈值 比例")) as HTMLInputElement;
+    fireEvent.change(spec, { target: { value: "2" } });
+    fireEvent.change(rotate, { target: { value: "0.7" } });
+    fireEvent.click(screen.getByRole("button", { name: "恢复默认：spec.md" }));
+    expect(spec.value).toBe(String(DEFAULT_NANO_FLOW_SETTINGS.specMaxBytes / 1024));
+    expect(rotate.value).toBe("0.7");
+    expect(posts).toHaveLength(0);
+  });
+
   it("hides the settings toggle when Nano Flow is off", async () => {
     vi.stubGlobal(
       "fetch",
