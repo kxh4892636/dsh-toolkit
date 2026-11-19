@@ -1,12 +1,12 @@
 ---
 name: learning
-description: 将学习材料整理为 Markdown 知识笔记或导图笔记，或制作 Anki 卡片时使用；建立知识覆盖账本，按概念组织问答式笔记与导图，或经去重与预览确认后创建牌组和卡片。
+description: 将学习材料整理为 Markdown 知识笔记，或制作 Anki 卡片时使用；建立知识覆盖账本，按概念组织问答式笔记，或经去重与预览确认后创建牌组和卡片。
 disable-model-invocation: true
 ---
 
 # Learning
 
-把一份学习材料整理成 Markdown 笔记；需要 Anki 卡片时另读 [ANKI.md](ANKI.md)。
+把一份学习材料整理成 Markdown 知识笔记；格式与模板见 [NOTE.md](NOTE.md)，需要 Anki 卡片时另读 [ANKI.md](ANKI.md)。
 
 ## 1. 覆盖账本
 
@@ -14,23 +14,15 @@ disable-model-invocation: true
 
 ## 2. 组织目录
 
-按概念体系划分笔记顶级目录；每个顶级目录放一份导图笔记，知识笔记平铺：
+按概念体系划分笔记顶级目录，知识笔记平铺：
 
 ```
 {笔记顶级目录}
-├── MINDMAP.md        # 导图笔记
 ├── {NOTE-1}.md       # 知识笔记
 └── {NOTE-2}.md       # 知识笔记
 ```
 
-## 3. 选类型
-
-- 先看领域全貌、梳理概念关系：写**导图笔记**，规则与模板见 [MINDMAP.md](MINDMAP.md)；
-- 解决一个具体问题、需要完整讲解：写**知识笔记**，规则与模板见 [NOTE.md](NOTE.md)。
-
-两类并存；同一解释只写一处，导图节点引用知识笔记。
-
-## 4. 写作规范
+## 3. 写作规范
 
 - 使用费曼技巧、电报体、短句；
 - 一行一条 `标签: 解释;`：标签用短名词，解释用最短完整句；只写事实、机制与具体取值；
@@ -45,6 +37,6 @@ frontmatter 写 `id` 与 `anki`：`id` 为稳定 UUID；`anki` 缺省 true，`an
 python3 scripts/note-metrics.py <笔记目录>... [--detail] [--json] [--exclude <路径子串>]
 ```
 
-## 5. 收尾
+## 4. 收尾
 
 逐项核对账本：知识点都有产出或排除理由；UUID 无冲突；相对链接可达；文档格式与构建校验通过。
