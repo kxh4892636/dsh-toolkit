@@ -74,6 +74,8 @@ const makeHarness = (
     compactError?: unknown;
     /** 注入第几轮时挂住不结束：0 = 压缩前，1 = 压缩后；由 release() 放行。 */
     holdInjectAt?: number;
+    /** 放行用户消息时 throw：验证后台链路只 warn、不产生未处理的 rejection。 */
+    failRelease?: boolean;
   } = {},
 ) => {
   const session = options.session ?? makeSession();
@@ -103,6 +105,7 @@ const makeHarness = (
     const text = String((request.content[0] as { text?: string } | undefined)?.text ?? "");
     if (request.requestId === "request-1") {
       steps.push("user");
+      if (options.failRelease === true) throw new Error("user message rejected");
       return { accepted: true };
     }
     const stage = text === PRE_COMPACT_PROMPT ? "pre" : "post";
@@ -213,6 +216,17 @@ const textsOf = (request: PromptRequestLike | undefined): readonly string[] =>
 /** 一次完整轮转的四步顺序。 */
 const FULL_FLOW = ["inject:pre", "waited:pre", "compact", "inject:post", "waited:post", "user"];
 
+/**
+ * 等后台链路走完：四步都在与调用方脱钩的 Promise 里跑，
+ * 只能轮询到预期序列；轮询用的是宏任务，等到即说明 finally 也已执行。
+ */
+const waitFlow = async (
+  harness: ReturnType<typeof makeHarness>,
+  expected: readonly string[],
+): Promise<void> => {
+  await vi.waitFor(() => expect(harness.steps).toEqual(expected));
+};
+
 describe("selectedPreset", () => {
   it("以日志里最后一条预设选择为准，而不是 live header", () => {
     const session: RotationSession = {
@@ -243,11 +257,14 @@ describe("two fixed prompts", () => {
 });
 
 describe("rotation flow", () => {
-  it("触发时串行四步，用户消息最后才放行", async () => {
+  it("触发时串行四步，用户消息最后才放行，受理不等链路", async () => {
     const harness = makeHarness();
     harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
-    await harness.send();
-    expect(harness.steps).toEqual(FULL_FLOW);
+    const accepted = await harness.send();
+    // 受理只回 accepted：此时注入链路还在后台，用户消息一条都没发出。
+    expect(accepted).toEqual({ accepted: true });
+    expect(harness.steps).not.toContain("user");
+    await waitFlow(harness, FULL_FLOW);
     // 两次注入都换新 requestId，继承原会话，不改用户那条消息。
     const calls = harness.originalPrompt.mock.calls;
     const injectedRequests = [calls[0]?.[0], calls[1]?.[0]];
@@ -273,8 +290,9 @@ describe("rotation flow", () => {
     const sent = harness.send({}, caller.signal);
     // 检查点那一轮还没跑完，浏览器先把这条 RPC 拆了。
     caller.abort();
+    expect(await sent).toEqual({ accepted: true });
     harness.release();
-    await sent;
+    await waitFlow(harness, FULL_FLOW);
     // 1) 压缩照旧执行，拿到的不是调用方那个已 abort 的信号。
     expect(harness.engine.compactNow).toHaveBeenCalledTimes(1);
     expect(harness.engine.compactNow.mock.calls[0]?.[1]?.aborted).toBe(false);
@@ -296,6 +314,34 @@ describe("rotation flow", () => {
     expect(harness.warn).not.toHaveBeenCalled();
   });
 
+  it("受理不等轮转：检查点轮还挂着就先返回 accepted", async () => {
+    const harness = makeHarness({ holdInjectAt: 0 });
+    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    expect(await harness.send()).toEqual({ accepted: true });
+    // 压缩前那一轮还挂在半路：没压缩、没恢复轮、用户消息也没发出，受理已经返回。
+    expect(harness.steps).toEqual(["inject:pre"]);
+    expect(harness.engine.compactNow).not.toHaveBeenCalled();
+    harness.release();
+    await waitFlow(harness, FULL_FLOW);
+  });
+
+  it("后台放行用户消息失败时只 warn，不留未处理的 rejection", async () => {
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      const harness = makeHarness({ failRelease: true });
+      harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+      expect(await harness.send()).toEqual({ accepted: true });
+      await waitFlow(harness, FULL_FLOW);
+      expect(harness.warn).toHaveBeenCalledWith(expect.stringContaining("release failed"));
+      // Node 在事件循环末尾才上报未处理的 rejection，留两轮给它。
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
   it("等待带上的轮号下限是注入前的最大轮号", async () => {
     const session = makeSession({
       events: [
@@ -308,14 +354,15 @@ describe("rotation flow", () => {
     const harness = makeHarness({ session });
     harness.setPressure({ projectedTokens: 900, contextWindow: 1000 });
     await harness.send();
+    await waitFlow(harness, FULL_FLOW);
     expect(harness.waitForTurnEnd.mock.calls[0]?.[0]).toMatchObject({ afterTurn: 2 });
   });
 
   it("压缩前那一轮没跑完时跳过压缩，仍放行用户消息", async () => {
     const harness = makeHarness({ failInjectAt: 0 });
     harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
-    await harness.send();
-    expect(harness.steps).toEqual(["inject:pre", "inject:post", "waited:post", "user"]);
+    expect(await harness.send()).toEqual({ accepted: true });
+    await waitFlow(harness, ["inject:pre", "inject:post", "waited:post", "user"]);
     expect(harness.warn).toHaveBeenCalled();
     // 轮次还在跑，压缩只会拿到 busy；不制造这一次假失败。
     expect(harness.engine.compactNow).not.toHaveBeenCalled();
@@ -324,16 +371,16 @@ describe("rotation flow", () => {
   it("压缩后那一轮失败时只 warn，仍放行用户消息", async () => {
     const harness = makeHarness({ failInjectAt: 1 });
     harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
-    await harness.send();
-    expect(harness.steps).toEqual(["inject:pre", "waited:pre", "compact", "inject:post", "user"]);
+    expect(await harness.send()).toEqual({ accepted: true });
+    await waitFlow(harness, ["inject:pre", "waited:pre", "compact", "inject:post", "user"]);
     expect(harness.warn).toHaveBeenCalled();
   });
 
   it("等待超时时只 warn，跳过压缩继续往下", async () => {
     const harness = makeHarness({ timeoutAt: 0 });
     harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
-    await harness.send();
-    expect(harness.steps).toEqual(["inject:pre", "inject:post", "waited:post", "user"]);
+    expect(await harness.send()).toEqual({ accepted: true });
+    await waitFlow(harness, ["inject:pre", "inject:post", "waited:post", "user"]);
     expect(harness.warn).toHaveBeenCalledWith(expect.stringContaining("pre-compact"));
     expect(harness.engine.compactNow).not.toHaveBeenCalled();
   });
@@ -345,8 +392,8 @@ describe("rotation flow", () => {
     });
     const harness = makeHarness({ compactError: busy });
     harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
-    await harness.send();
-    expect(harness.steps).toEqual(FULL_FLOW);
+    expect(await harness.send()).toEqual({ accepted: true });
+    await waitFlow(harness, FULL_FLOW);
     expect(harness.warn).toHaveBeenCalledWith(expect.stringContaining("busy"));
     expect(textsOf(harness.originalPrompt.mock.calls[2]?.[0])).toEqual(["用户消息"]);
   });
@@ -422,19 +469,25 @@ describe("fallbacks", () => {
     const harness = makeHarness();
     harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
     await Promise.all([harness.send(), harness.send()]);
-    expect(harness.steps.filter((step) => step === "compact")).toHaveLength(1);
+    // 第二条落进原样放行；后台那条链路走完后仍然只压缩过一次。
+    await vi.waitFor(() => {
+      expect(harness.steps.filter((step) => step === "compact")).toHaveLength(1);
+      expect(harness.steps.filter((step) => step === "user")).toHaveLength(2);
+    });
   });
 
   it("轮转后要产出新的 assistant 输出才允许再轮转", async () => {
     const harness = makeHarness();
     harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
     await harness.send();
+    await waitFlow(harness, FULL_FLOW);
     const afterFirst = harness.steps.length;
     await harness.send();
     expect(harness.steps.slice(afterFirst)).toEqual(["user"]);
     harness.session.log.push({ type: "assistant/message", seq: 5000, data: {} });
     await harness.send();
-    expect(harness.steps.slice(afterFirst + 1)).toEqual(FULL_FLOW);
+    // 日志里新增了 assistant 输出：第三条重新走轮转，用户消息依旧最后放行。
+    await vi.waitFor(() => expect(harness.steps.slice(afterFirst + 1)).toEqual(FULL_FLOW));
   });
 
   it("dispose 还原原始 prompt", () => {

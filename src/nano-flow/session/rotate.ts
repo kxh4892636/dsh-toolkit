@@ -206,7 +206,7 @@ interface RotationTarget {
 }
 
 /**
- * 创建轮转引擎：`queue` 消息到达且上下文压力达阈值时，串行跑四步，先把用户消息扣住。
+ * 创建轮转引擎：`queue` 消息到达且上下文压力达阈值时，串行跑四步，用户消息最后放行。
  *
  * 1. 注入一轮「把进度写回 spec 与 note」，等它结束；
  * 2. 预设 realm 里登记过来的压缩桥（`compaction.compactNow(agent, signal)`）摘要旧历史；
@@ -215,6 +215,8 @@ interface RotationTarget {
  *
  * 第 1、3 步抛错或超时、第 2 步抛 `ManualCompactionError`（如 `busy`）都只 warn，
  * 不阻断第 4 步：任何失败都不许把用户消息弄丢。
+ * 四步整体在后台跑：一旦判定要轮转，`prompt` 立刻受理（只回 `accepted`），
+ * 不再把这几十秒扣在调用方的 RPC 上。
  * 挂在宿主层（根插件）而不是预设行：预设行看不到 `ctx.agent`（cordis 的 inject 守卫），
  * 由会话日志里最后一条 `agent-preset/selected` 判定预设。
  * @param options - 宿主能力、设置、会话解析与「等一轮结束」的 seam。
@@ -359,19 +361,27 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
     rotating.add(session.id);
     // 轮转一旦开始就与调用方断连解耦：客户端拆掉 RPC 时仍要走完压缩并放行消息。
     const detached = new AbortController().signal;
-    try {
-      // 前一步没跑完（超时/注入被拒）时轮次还在，压缩必然 busy：直接跳过，别制造一次假失败。
-      if (await runInjectedTurn(session, request, detached, PRE_COMPACT_PROMPT, "pre-compact")) {
-        await compactNow(rotation, detached);
+    const background = async (): Promise<void> => {
+      try {
+        // 前一步没跑完（超时/注入被拒）时轮次还在，压缩必然 busy：直接跳过，别制造一次假失败。
+        if (await runInjectedTurn(session, request, detached, PRE_COMPACT_PROMPT, "pre-compact")) {
+          await compactNow(rotation, detached);
+        }
+        await runInjectedTurn(session, request, detached, POST_COMPACT_PROMPT, "post-compact");
+        // 四步里的三段都已各自 warn 过；用户这条消息一定放行，同样不受调用方断连影响。
+        await original!(request, detached);
+      } catch (error) {
+        // 这条 Promise 已脱手：放行失败只能留痕，reject 会变成未处理的 rejection。
+        services.logger.warn(`nano-flow: rotation release failed: ${describeError(error)}`);
+      } finally {
+        rotating.delete(session.id);
+        const anchor = maxSeq(eventsOf(session));
+        if (anchor !== undefined) rotatedAt.set(session.id, anchor);
       }
-      await runInjectedTurn(session, request, detached, POST_COMPACT_PROMPT, "post-compact");
-    } finally {
-      rotating.delete(session.id);
-      const anchor = maxSeq(eventsOf(session));
-      if (anchor !== undefined) rotatedAt.set(session.id, anchor);
-    }
-    // 四步里的三段都已各自 warn 过；用户这条消息一定放行，同样不受调用方断连影响。
-    return original!(request, detached);
+    };
+    // 扣住调用方 RPC 的代价是客户端切走后受理证明无主；受理立刻回，链路自己跑完。
+    void background();
+    return { accepted: true };
   };
 
   return {
