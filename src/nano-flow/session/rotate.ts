@@ -264,7 +264,7 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
    * 等待先挂上再注入，否则那一轮的 `turn/end` 可能在订阅建立前就发过。
    * @param sessionId - 目标会话（与 agent 同 id）。
    * @param request - 用户那条 prompt，用来继承 sessionId 与其余字段。
-   * @param signal - 调用方取消信号。
+   * @param signal - 取消信号；轮转分支传的是脱离调用方的 detached 信号。
    * @param text - 注入的正文。
    * @param stage - 日志里区分「压缩前 / 压缩后」。
    */
@@ -357,19 +357,21 @@ export const createRotation = (options: RotationOptions): RotationEngine => {
     if (rotated !== undefined && !advancedSince(events, rotated)) return fallback();
 
     rotating.add(session.id);
+    // 轮转一旦开始就与调用方断连解耦：客户端拆掉 RPC 时仍要走完压缩并放行消息。
+    const detached = new AbortController().signal;
     try {
       // 前一步没跑完（超时/注入被拒）时轮次还在，压缩必然 busy：直接跳过，别制造一次假失败。
-      if (await runInjectedTurn(session, request, signal, PRE_COMPACT_PROMPT, "pre-compact")) {
-        await compactNow(rotation, signal);
+      if (await runInjectedTurn(session, request, detached, PRE_COMPACT_PROMPT, "pre-compact")) {
+        await compactNow(rotation, detached);
       }
-      await runInjectedTurn(session, request, signal, POST_COMPACT_PROMPT, "post-compact");
+      await runInjectedTurn(session, request, detached, POST_COMPACT_PROMPT, "post-compact");
     } finally {
       rotating.delete(session.id);
       const anchor = maxSeq(eventsOf(session));
       if (anchor !== undefined) rotatedAt.set(session.id, anchor);
     }
-    // 四步里的三段都已各自 warn 过；用户这条消息一定放行。
-    return fallback();
+    // 四步里的三段都已各自 warn 过；用户这条消息一定放行，同样不受调用方断连影响。
+    return original!(request, detached);
   };
 
   return {

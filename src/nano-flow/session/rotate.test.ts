@@ -72,6 +72,8 @@ const makeHarness = (
     timeoutAt?: number;
     /** compactNow 抛出的错误。 */
     compactError?: unknown;
+    /** 注入第几轮时挂住不结束：0 = 压缩前，1 = 压缩后；由 release() 放行。 */
+    holdInjectAt?: number;
   } = {},
 ) => {
   const session = options.session ?? makeSession();
@@ -82,6 +84,8 @@ const makeHarness = (
   let injected = 0;
   let waits = 0;
   const pending: Pending[] = [];
+  /** 挂在半路的那次注入的放行开关；配合 {@link holdInjectAt} 使用。 */
+  let release: (() => void) | undefined;
   const warn = vi.fn();
   const engine = {
     compactNow: vi.fn(async (_agent: unknown, _signal: AbortSignal) => {
@@ -103,17 +107,30 @@ const makeHarness = (
     }
     const stage = text === PRE_COMPACT_PROMPT ? "pre" : "post";
     steps.push(`inject:${stage}`);
-    if (options.failInjectAt === injected) {
+    const index = injected;
+    if (options.failInjectAt === index) {
       injected += 1;
       throw new Error(`${stage} turn rejected`);
     }
     injected += 1;
     // 模拟宿主：这一轮真的跑起来并结束。
-    for (const event of turnEvents(seq, injected)) session.log.push({ ...event });
-    seq += 3;
-    const waiter = pending.shift();
-    waiter?.resolve();
-    if (waiter !== undefined) steps.push(`waited:${stage}`);
+    const finish = (): void => {
+      for (const event of turnEvents(seq, index + 1)) session.log.push({ ...event });
+      seq += 3;
+      const waiter = pending.shift();
+      waiter?.resolve();
+      if (waiter !== undefined) steps.push(`waited:${stage}`);
+    };
+    if (options.holdInjectAt === index) {
+      // 这一轮挂在半路，测试可以趁它没跑完去拆调用方的连接。
+      return new Promise<{ accepted: boolean }>((resolve) => {
+        release = () => {
+          finish();
+          resolve({ accepted: true });
+        };
+      });
+    }
+    finish();
     return { accepted: true };
   });
   const waitForTurnEnd = vi.fn(
@@ -170,8 +187,10 @@ const makeHarness = (
     content: [{ type: "text", text: "用户消息" }],
     ...overrides,
   });
-  const send = (overrides: Partial<PromptRequestLike> = {}): Promise<{ accepted: boolean }> =>
-    controller.prompt(request(overrides), signal);
+  const send = (
+    overrides: Partial<PromptRequestLike> = {},
+    caller: AbortSignal = signal,
+  ): Promise<{ accepted: boolean }> => controller.prompt(request(overrides), caller);
   return {
     controller,
     originalPrompt,
@@ -182,6 +201,8 @@ const makeHarness = (
     waitForTurnEnd,
     dispose,
     send,
+    /** 放行挂住的那次注入（没挂住时是空操作）。 */
+    release: () => release?.(),
     setPressure: (next: Pressure) => (pressure = next),
   };
 };
@@ -235,13 +256,43 @@ describe("rotation flow", () => {
     expect(injectedRequests.map((req) => req?.sessionId)).toEqual(["session-1", "session-1"]);
     // 用户消息原样发出，没有被改写。
     expect(textsOf(calls[2]?.[0])).toEqual(["用户消息"]);
-    // compactNow 拿到该会话的 agent 与这一次请求的信号。
+    // compactNow 拿到该会话的 agent 与一个未被取消的信号。
     expect(harness.engine.compactNow).toHaveBeenCalledWith(
       expect.objectContaining({ id: "session-1" }),
-      signal,
+      expect.any(AbortSignal),
     );
     // 这个夹具没有任何轮次，所以不带轮号下限。
     expect(harness.waitForTurnEnd.mock.calls[0]?.[0]).not.toHaveProperty("afterTurn");
+    expect(harness.warn).not.toHaveBeenCalled();
+  });
+
+  it("调用方中途断连时仍走完压缩并放行用户消息", async () => {
+    const harness = makeHarness({ holdInjectAt: 0 });
+    harness.setPressure({ projectedTokens: 700, contextWindow: 1000 });
+    const caller = new AbortController();
+    const sent = harness.send({}, caller.signal);
+    // 检查点那一轮还没跑完，浏览器先把这条 RPC 拆了。
+    caller.abort();
+    harness.release();
+    await sent;
+    // 1) 压缩照旧执行，拿到的不是调用方那个已 abort 的信号。
+    expect(harness.engine.compactNow).toHaveBeenCalledTimes(1);
+    expect(harness.engine.compactNow.mock.calls[0]?.[1]?.aborted).toBe(false);
+    // 2) 恢复轮照样注入，两次等待的信号都没 abort。
+    expect(harness.originalPrompt.mock.calls.map((call) => textsOf(call[0]))).toContainEqual([
+      POST_COMPACT_PROMPT,
+    ]);
+    expect(harness.waitForTurnEnd.mock.calls.map((call) => call[0].signal.aborted)).toEqual([
+      false,
+      false,
+    ]);
+    // 3) 用户原消息被放行，且带着未 abort 的信号。
+    const userCall = harness.originalPrompt.mock.calls.find((call) =>
+      textsOf(call[0]).includes("用户消息"),
+    );
+    expect(userCall?.[1]).toBeDefined();
+    expect(userCall?.[1]?.aborted).toBe(false);
+    expect(harness.steps).toEqual(FULL_FLOW);
     expect(harness.warn).not.toHaveBeenCalled();
   });
 
