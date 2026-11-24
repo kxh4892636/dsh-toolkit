@@ -1,12 +1,12 @@
 ---
 name: learning
-description: 将学习材料整理为 Markdown 知识笔记，或制作 Anki 卡片时使用；建立知识覆盖账本，按概念组织问答式笔记，或经去重与预览确认后创建牌组和卡片。
+description: 将学习材料整理为 Markdown 知识笔记、速查卡，或制作 Anki 卡片时使用；建立知识覆盖账本，按概念组织问答式笔记，把高频难记的条目压成多栏速查卡，或经去重与预览确认后创建牌组和卡片。
 disable-model-invocation: true
 ---
 
 # Learning
 
-把一份学习材料整理成 Markdown 知识笔记；格式与模板见 [NOTE.md](NOTE.md)，需要 Anki 卡片时另读 [ANKI.md](ANKI.md)。
+把一份学习材料整理成 Markdown 知识笔记；格式与模板见 [NOTE.md](NOTE.md)，需要 Anki 卡片时另读 [ANKI.md](ANKI.md)，需要一张速查卡（命令、语法、概念对照）时另读 [CHEATSHEET.md](CHEATSHEET.md)。
 
 ## 1. 覆盖账本
 

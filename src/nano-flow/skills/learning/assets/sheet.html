@@ -1,0 +1,468 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>sheet</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #fff;
+      }
+      body {
+        font-family: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+        color: #101010;
+      }
+      .page {
+        width: var(--pw);
+        height: var(--ph);
+        padding: var(--pad);
+        overflow: hidden;
+        position: relative;
+      }
+      .hd {
+        height: var(--head);
+        border-bottom: 1.6px solid #101010;
+        padding-bottom: 3px;
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .hd b {
+        font-size: var(--title);
+        line-height: 1.05;
+        letter-spacing: 0.2px;
+      }
+      .hd span {
+        font-size: calc(var(--fs) * 0.92);
+        color: #444;
+        white-space: nowrap;
+      }
+      .ft {
+        position: absolute;
+        left: var(--pad);
+        right: var(--pad);
+        bottom: 4px;
+        font-size: calc(var(--fs) * 0.85);
+        color: #555;
+      }
+      .cols {
+        margin-top: var(--gap-top);
+        display: flex;
+        gap: var(--gap);
+        height: var(--colh);
+      }
+      .col {
+        width: var(--colw);
+        flex: none;
+      }
+      .sec {
+        margin: 0 0 3px;
+      }
+      .sec .st {
+        font-size: calc(var(--fs) * 1.18);
+        line-height: 1.22;
+        margin: 0 0 1.5px;
+        font-weight: 700;
+      }
+      .sec h1,
+      .sec h2 {
+        font-size: calc(var(--fs) * 1.22);
+        line-height: 1.25;
+        margin: 3px 0 1px;
+        font-weight: 700;
+      }
+      .sec h3 {
+        font-size: calc(var(--fs) * 1.12);
+        line-height: 1.25;
+        margin: 2.5px 0 1px;
+        font-weight: 700;
+      }
+      .sec h3 {
+        border-left: 1.5px solid #777;
+        padding-left: 2.5px;
+      }
+      .sec .st {
+        border-left: 0;
+        padding-left: 0;
+      }
+      .sec h4,
+      .sec h5,
+      .sec h6 {
+        font-size: calc(var(--fs) * 1.02);
+        margin: 2px 0 1px;
+        font-weight: 700;
+      }
+      .sec p {
+        margin: 1px 0;
+        font-size: var(--fs);
+        line-height: 1.38;
+      }
+      .sec ul,
+      .sec ol {
+        margin: 1px 0;
+        padding-left: 1.15em;
+      }
+      .sec ul {
+        list-style: disc;
+      }
+      .sec ol {
+        list-style: decimal;
+      }
+      .sec li {
+        font-size: var(--fs);
+        line-height: 1.34;
+      }
+      .sec li > ul,
+      .sec li > ol {
+        margin: 0;
+      }
+      .sec li::marker {
+        color: #555;
+      }
+      .sec blockquote {
+        margin: 2px 0;
+        padding: 0 0 0 4px;
+        border-left: 2px solid #ccc;
+        color: #333;
+      }
+      .sec blockquote p {
+        margin: 0;
+      }
+      .sec a {
+        color: #0b57d0;
+        text-decoration: none;
+      }
+      .sec strong {
+        font-weight: 700;
+      }
+      .sec del {
+        text-decoration: line-through;
+      }
+      .sec hr {
+        border: 0;
+        border-top: 1px solid #ccc;
+        margin: 3px 0;
+      }
+      .sec img {
+        max-width: 100%;
+        height: auto;
+        display: block;
+        margin: 1px 0;
+      }
+      .sec table {
+        width: 100%;
+        table-layout: fixed;
+        border-collapse: collapse;
+        font-size: calc(var(--fs) * 0.96);
+        margin: 1px 0;
+      }
+      .sec th,
+      .sec td {
+        border: 0.5px solid #999;
+        padding: 0.4px 2px;
+        text-align: left;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+      }
+      .sec th {
+        background: #eee;
+        font-weight: 700;
+      }
+      .sec code {
+        font-family: Consolas, "Courier New", monospace;
+        font-size: calc(var(--fs) * 0.95);
+        background: #f0f0f0;
+        padding: 0 1px;
+      }
+      .sec pre {
+        margin: 1px 0;
+        padding: 1px 3px;
+        background: #f4f4f4;
+        border-left: 2px solid #bbb;
+        font-size: calc(var(--fs) * 0.93);
+        line-height: 1.25;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .sec pre code {
+        background: none;
+        padding: 0;
+        font-size: 1em;
+      }
+      .sec .mermaid {
+        margin: 2px 0;
+        text-align: center;
+      }
+      .sec .mermaid svg {
+        max-width: 100%;
+        height: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <div id="meta" data-pages="0" data-warn="" data-fill="0" data-ready="0"></div>
+    <script type="application/json" id="payload">
+      __PAYLOAD__
+    </script>
+    <!--__MERMAID__-->
+    <script>
+      (async function () {
+        var D = JSON.parse(document.getElementById("payload").textContent);
+        var PW = D.geom.pw,
+          PH = D.geom.ph,
+          PAD = D.geom.pad,
+          GAP = D.geom.gap;
+        var COLS = D.columns,
+          FS = D.fontPx,
+          TITLE = Math.max(14, FS * 2),
+          HEAD = Math.round(TITLE * 1.1) + 8,
+          FOOT = D.source ? 11 : 0;
+        var GAP_TOP = 8,
+          GAP_BOTTOM = 18;
+        var COLH = PH - PAD * 2 - HEAD - FOOT - GAP_TOP - GAP_BOTTOM;
+        var COLW = (PW - PAD * 2 - GAP * (COLS - 1)) / COLS;
+        var rs = document.documentElement.style;
+        rs.setProperty("--pw", PW + "px");
+        rs.setProperty("--ph", PH + "px");
+        rs.setProperty("--pad", PAD + "px");
+        rs.setProperty("--gap", GAP + "px");
+        rs.setProperty("--fs", FS + "px");
+        rs.setProperty("--title", TITLE + "px");
+        rs.setProperty("--gap-top", GAP_TOP + "px");
+        rs.setProperty("--head", HEAD + "px");
+        rs.setProperty("--colh", COLH + "px");
+        rs.setProperty("--colw", COLW + "px");
+
+        function sectionEl(s) {
+          var d = document.createElement("div");
+          d.className = "sec";
+          if (s.title) {
+            var h = document.createElement("h3");
+            h.className = "st";
+            h.innerHTML = s.title;
+            d.appendChild(h);
+          }
+          var body = document.createElement("div");
+          body.innerHTML = s.html;
+          while (body.firstChild) d.appendChild(body.firstChild);
+          return d;
+        }
+
+        var box = document.createElement("div");
+        box.style.cssText = "position:absolute;left:-99999px;top:0;width:" + COLW + "px";
+        document.body.appendChild(box);
+        var els = D.sections.map(function (s) {
+          var el = sectionEl(s);
+          box.appendChild(el);
+          return el;
+        });
+
+        if (window.mermaid) {
+          var blocks = box.querySelectorAll("pre > code.language-mermaid");
+          for (var i = 0; i < blocks.length; i++) {
+            var div = document.createElement("div");
+            div.className = "mermaid";
+            div.textContent = blocks[i].textContent;
+            blocks[i].parentElement.replaceWith(div);
+          }
+          if (blocks.length) {
+            try {
+              window.mermaid.initialize({
+                startOnLoad: false,
+                theme: "neutral",
+                securityLevel: "loose",
+                fontFamily: "Noto Sans SC, Microsoft YaHei, sans-serif",
+                themeVariables: { fontSize: "11px" },
+              });
+              await window.mermaid.run({
+                nodes: box.querySelectorAll(".mermaid"),
+              });
+            } catch (err) {
+              console.warn("mermaid:", err);
+            }
+          }
+        }
+
+        var imgs = [].slice.call(document.images);
+        await Promise.all(
+          imgs.map(function (im) {
+            return im.complete
+              ? null
+              : new Promise(function (res) {
+                  im.onload = im.onerror = res;
+                });
+          }),
+        );
+
+        // 拆成可流动的单元：标题、块、列表项；按单元填栏，栏底只剩不足一行的空白
+        var units = [];
+        var warn = [];
+        els.forEach(function (el, si) {
+          var heading = el.querySelector(".st");
+          var kids = [].slice.call(el.children);
+          var secH = 0;
+          kids.forEach(function (c) {
+            secH += c.getBoundingClientRect().height;
+          });
+          var hasSub = el.querySelector("h3:not(.st), h4, h5, h6");
+          if (secH > COLH && !hasSub) warn.push(D.sections[si].title || "#" + si);
+          kids.forEach(function (c) {
+            if (c.tagName === "UL" || c.tagName === "OL") {
+              [].slice.call(c.children).forEach(function (li, k) {
+                units.push({
+                  node: li,
+                  list: c.tagName,
+                  sec: si,
+                  seq: k,
+                  h: li.getBoundingClientRect().height,
+                });
+              });
+            } else {
+              units.push({
+                node: c,
+                sec: si,
+                h: c.getBoundingClientRect().height,
+                head: c === heading || /^H[1-6]$/.test(c.tagName),
+              });
+            }
+          });
+        });
+
+        var cols = [],
+          cur = null,
+          left = 0,
+          secEl = null,
+          listEl = null,
+          secIdx = -1;
+        function newCol() {
+          cur = document.createElement("div");
+          cur.className = "col";
+          cols.push(cur);
+          left = COLH;
+          secEl = null;
+          listEl = null;
+        }
+        newCol();
+        units.forEach(function (u, i) {
+          if (u.sec !== secIdx) {
+            secIdx = u.sec;
+            secEl = null;
+            listEl = null;
+          }
+          var need = u.h;
+          if (u.head) {
+            var nxt = units[i + 1];
+            if (nxt && nxt.sec === u.sec) need += Math.min(nxt.h, COLH);
+          }
+          if (need > left && left < COLH) newCol();
+          if (!secEl) {
+            secEl = document.createElement("div");
+            secEl.className = "sec";
+            cur.appendChild(secEl);
+          }
+          if (u.list) {
+            if (!listEl) {
+              listEl = document.createElement(u.list.toLowerCase());
+              if (u.list === "OL") listEl.setAttribute("start", String((u.seq || 0) + 1));
+              secEl.appendChild(listEl);
+            }
+            listEl.appendChild(u.node);
+          } else {
+            listEl = null;
+            secEl.appendChild(u.node);
+          }
+          left -= u.h;
+        });
+
+        var pageCount = Math.ceil(cols.length / COLS);
+        var pages = [];
+        for (var pi0 = 0; pi0 < pageCount; pi0++)
+          pages.push(cols.slice(pi0 * COLS, pi0 * COLS + COLS));
+
+        var stage = document.getElementById("stage");
+        pages.forEach(function (pcols, pi) {
+          var page = document.createElement("div");
+          page.className = "page";
+          var hd = document.createElement("div");
+          hd.className = "hd";
+          var b = document.createElement("b");
+          b.textContent = D.title;
+          var sp = document.createElement("span");
+          sp.textContent = D.subtitle + " | " + (pi + 1) + " / " + pages.length;
+          hd.appendChild(b);
+          hd.appendChild(sp);
+          page.appendChild(hd);
+          var colsWrap = document.createElement("div");
+          colsWrap.className = "cols";
+          pcols.forEach(function (c) {
+            colsWrap.appendChild(c);
+          });
+          page.appendChild(colsWrap);
+          if (D.source) {
+            var ft = document.createElement("div");
+            ft.className = "ft";
+            ft.textContent = D.source;
+            page.appendChild(ft);
+          }
+          stage.appendChild(page);
+        });
+        box.remove();
+
+        var meta = document.getElementById("meta");
+        meta.setAttribute("data-pages", String(pages.length));
+        meta.setAttribute("data-warn", warn.join(" ;; "));
+        function colUsed(c) {
+          var kids = c.children;
+          if (!kids.length) return 0;
+          var top = c.getBoundingClientRect().top;
+          var bottom = kids[kids.length - 1].getBoundingClientRect().bottom;
+          return Math.min(COLH, bottom - top + 3);
+        }
+        var pageFill = pages.map(function (pcols) {
+          var used = 0;
+          pcols.forEach(function (c) {
+            used += colUsed(c);
+          });
+          return used / (COLS * COLH);
+        });
+        meta.setAttribute(
+          "data-fill",
+          (
+            pageFill.reduce(function (a, b) {
+              return a + b;
+            }, 0) / pages.length
+          ).toFixed(3),
+        );
+        meta.setAttribute(
+          "data-fill-pages",
+          pageFill
+            .map(function (v) {
+              return v.toFixed(3);
+            })
+            .join(","),
+        );
+
+        var q = new URLSearchParams(location.search);
+        if (q.has("page")) {
+          var n = Number(q.get("page"));
+          if (q.has("export")) {
+            var all = document.querySelectorAll(".page");
+            for (var j = 0; j < all.length; j++) all[j].style.display = j === n ? "block" : "none";
+            window.scrollTo(0, 0);
+          } else {
+            window.scrollTo(0, n * PH);
+          }
+        }
+        meta.setAttribute("data-ready", "1");
+        document.title = "ready";
+      })();
+    </script>
+  </body>
+</html>
