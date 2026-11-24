@@ -4,12 +4,12 @@
 用法:
     python3 note-metrics.py <目录或文件>... [--detail] [--json] [--exclude <路径子串>]
 
-口径与 SKILL.md 一致:
+口径与 SKILL.md、CHEATSHEET.md 一致:
     - 条目字数: 列表条目去掉 `- ` 后的字符数;
-    - 每节条数: 每个 H2 之下的列表条目数;
-    - 参考值固定写在本文件，改动需同步 SKILL.md。
+    - 每节条数: 笔记按 H2 计数, 速查卡 ( *.cheatsheet.md ) 按 H3 计数;
+    - 参考值固定写在本文件，改动需同步 SKILL.md 与 CHEATSHEET.md。
 
-分位数用线性插值，保留 1 位小数；超限阈值是条目 60 字、每节 8 条。
+分位数用线性插值，保留 1 位小数；超限阈值是笔记条目 60 字、速查卡条目 89 字、每节 8 条。
 """
 
 from __future__ import annotations
@@ -26,12 +26,14 @@ REFERENCE = {
     "section": {"mean": 3.5, "p50": 3.0, "p90": 6.0, "over8": 2.2},
 }
 
-# 超长阈值: 条目 60 字、每节 8 条。
-LIMITS = {"bullet": 60, "section": 8}
+# 超长阈值: 笔记条目 60 字、速查卡条目 89 字、每节 8 条。
+LIMITS = {"bullet": 60, "sheetBullet": 89, "section": 8}
 
 BULLET = re.compile(r"^\s*[-*] ")
 FENCE = re.compile(r"^\s*```")
 H2 = re.compile(r"^## ")
+H3 = re.compile(r"^### ")
+CHEATSHEET = ".cheatsheet.md"
 
 
 def collect_files(targets: list[str], excludes: list[str]) -> tuple[list[str], list[str]]:
@@ -60,13 +62,8 @@ def collect_files(targets: list[str], excludes: list[str]) -> tuple[list[str], l
     return files, missing
 
 
-def read_note(file: str) -> dict:
-    """解析一份笔记: 条目字数、每节条数。"""
-    with open(file, encoding="utf-8") as handle:
-        rows = handle.read().split("\n")
-    if rows and rows[-1] == "":
-        rows.pop()
-
+def body_lines(rows: list[str]) -> list[str]:
+    """去掉 frontmatter 与围栏代码块, 只留正文行。"""
     start = 0
     if rows and rows[0].strip() == "---":
         start = 1
@@ -74,17 +71,38 @@ def read_note(file: str) -> dict:
             start += 1
         start += 1
 
-    bullets: list[int] = []
-    sections: list[int] = []
-    current: int | None = None
+    kept: list[str] = []
     fence = False
     for line in rows[start:]:
         if FENCE.match(line):
             fence = not fence
             continue
-        if fence:
-            continue
-        if H2.match(line):
+        if not fence:
+            kept.append(line)
+    return kept
+
+
+def heading_of(file: str, lines: list[str]) -> re.Pattern[str]:
+    """数节的标题级别: 速查卡按 H3, 其余按 H2; 速查卡没有 H3 时退回 H2。"""
+    if file.endswith(CHEATSHEET) and any(H3.match(line) for line in lines):
+        return H3
+    return H2
+
+
+def read_note(file: str) -> dict:
+    """解析一份笔记: 条目字数、每节条数。"""
+    with open(file, encoding="utf-8") as handle:
+        rows = handle.read().split("\n")
+    if rows and rows[-1] == "":
+        rows.pop()
+
+    lines = body_lines(rows)
+    head = heading_of(file, lines)
+    bullets: list[int] = []
+    sections: list[int] = []
+    current: int | None = None
+    for line in lines:
+        if head.match(line):
             if current is not None:
                 sections.append(current)
             current = 0
@@ -96,7 +114,7 @@ def read_note(file: str) -> dict:
     if current is not None:
         sections.append(current)
 
-    return {"file": file, "bullet": bullets, "section": sections}
+    return {"file": file, "sheet": file.endswith(CHEATSHEET), "bullet": bullets, "section": sections}
 
 
 def quantile(values: list[float], percent: float) -> float:
@@ -119,8 +137,10 @@ def percent(count: int, total: int) -> float:
 
 
 def summarize(notes: list[dict]) -> dict:
-    """汇总为两组分布。"""
-    bullets = [value for note in notes for value in note["bullet"]]
+    """汇总为两组分布; 速查卡条目按自己的上限单独统计。"""
+    note_bullets = [value for note in notes if not note["sheet"] for value in note["bullet"]]
+    sheet_bullets = [value for note in notes if note["sheet"] for value in note["bullet"]]
+    bullets = note_bullets + sheet_bullets
     sections = [value for note in notes for value in note["section"]]
     rnd = lambda value: round(value, 1)  # noqa: E731
     return {
@@ -128,11 +148,20 @@ def summarize(notes: list[dict]) -> dict:
         "bulletCount": len(bullets),
         "sectionCount": len(sections),
         "bullet": {
+            "noteCount": len(note_bullets),
             "mean": rnd(mean(bullets)),
             "p50": rnd(quantile(bullets, 50)),
             "p90": rnd(quantile(bullets, 90)),
             "p95": rnd(quantile(bullets, 95)),
-            "over60": rnd(percent(sum(1 for value in bullets if value > LIMITS["bullet"]), len(bullets))),
+            "over60": rnd(
+                percent(sum(1 for value in note_bullets if value > LIMITS["bullet"]), len(note_bullets))
+            ),
+        },
+        "sheet": {
+            "count": len(sheet_bullets),
+            "over89": rnd(
+                percent(sum(1 for value in sheet_bullets if value > LIMITS["sheetBullet"]), len(sheet_bullets))
+            ),
         },
         "section": {
             "mean": rnd(mean(sections)),
@@ -145,17 +174,23 @@ def summarize(notes: list[dict]) -> dict:
 
 def rows(summary: dict) -> list[list[str]]:
     one = lambda value: f"{value:.1f}"  # noqa: E731
-    return [
+    body = [
         ["条目字数", "均值", one(REFERENCE["bullet"]["mean"]), one(summary["bullet"]["mean"])],
         ["", "P50", one(REFERENCE["bullet"]["p50"]), one(summary["bullet"]["p50"])],
         ["", "P90", one(REFERENCE["bullet"]["p90"]), one(summary["bullet"]["p90"])],
         ["", "P95", one(REFERENCE["bullet"]["p95"]), one(summary["bullet"]["p95"])],
-        ["", "超 60 字占比 %", one(REFERENCE["bullet"]["over60"]), one(summary["bullet"]["over60"])],
+    ]
+    if summary["bullet"]["noteCount"]:
+        body.append(["", "超 60 字占比 %", one(REFERENCE["bullet"]["over60"]), one(summary["bullet"]["over60"])])
+    if summary["sheet"]["count"]:
+        body.append(["", "超 89 字占比 %", "—", one(summary["sheet"]["over89"])])
+    body += [
         ["每节条数", "均值", one(REFERENCE["section"]["mean"]), one(summary["section"]["mean"])],
         ["", "P50", one(REFERENCE["section"]["p50"]), one(summary["section"]["p50"])],
         ["", "P90", one(REFERENCE["section"]["p90"]), one(summary["section"]["p90"])],
         ["", "超 8 条占比 %", one(REFERENCE["section"]["over8"]), one(summary["section"]["over8"])],
     ]
+    return body
 
 
 def width_of(text: str) -> int:

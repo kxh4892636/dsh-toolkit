@@ -11,6 +11,7 @@ import { marked } from "../assets/vendor/marked.esm.js";
 const HERE = dirname(fileURLToPath(import.meta.url));
 let crcTable = null;
 const PAGE_SIZES = { letter: [1056, 816], a4: [1123, 794] };
+const STITCHED = "cheatsheet.png";
 
 function parseArgs(argv) {
   const out = {
@@ -212,7 +213,7 @@ for (let i = 0; i < res.pages; i++) {
   pageFiles.push(file);
 }
 const stitched = stitchPng(pageFiles);
-writeFileSync(join(outDir, "sheet.png"), stitched.data);
+writeFileSync(join(outDir, STITCHED), stitched.data);
 
 const chars = sections.reduce((n, s) => n + s.md.replace(/\s/g, "").length, 0);
 const items = sections.reduce(
@@ -283,7 +284,9 @@ console.log(
   "产物    : " +
     join(outDir, "page-1.png") +
     (res.pages > 1 ? " ... page-" + res.pages + ".png" : "") +
-    "；拼接图 sheet.png " +
+    "；拼接图 " +
+    STITCHED +
+    " " +
     stitched.width +
     "×" +
     stitched.height +
