@@ -169,7 +169,7 @@ lark-cli skills read lark-doc/references/lark-doc-xml.md
 </ul>
 ```
 
-段落长度与段落节奏见 [SKILL.md](../SKILL.md) 的「文风」「版式」；列表首词加粗做标签，但别每条都一个句式。
+段落长度与段落节奏见 [SKILL.md](../SKILL.md) 的「文风」「版式」：两段正文连着说时，第二段改成列表、引用或卡片，不要并排两个 `<p>`。列表首词加粗做标签，但别每条都一个句式。
 
 ### 结尾
 
@@ -239,6 +239,17 @@ lark-cli skills read lark-doc/references/lark-doc-xml.md
 ```xml
 <!-- 错：Markdown 不解析 -->
 <p>**重点**：这样写不会加粗。</p>
+
+<!-- 错：两段普通正文并排 -->
+<p>先补监控：首屏耗时、接口耗时、图片体积。</p>
+<p>数据出来后发现，接口等待占了 2.1 秒。</p>
+
+<!-- 对：第二段换成列表 -->
+<p>先补监控：首屏耗时、接口耗时、图片体积。</p>
+<ul>
+  <li><b>接口等待：</b>2.1 秒，占了大头</li>
+  <li><b>图片：</b>0.7 秒</li>
+</ul>
 
 <!-- 错：callout 里塞表格 -->
 <callout emoji="💡" background-color="light-blue" border-color="blue">
