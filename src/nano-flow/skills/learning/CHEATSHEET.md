@@ -32,7 +32,8 @@
 
 ## 出图
 
-- 固定两个产物，平铺在目标目录：源 `000-cheatsheet.md`，拼接图 `000-cheatsheet.png`；`page-N.png` 等中间件只落系统临时目录。
+- 固定两个产物，平铺在目标目录：源 `000-cheatsheet.md`，拼接图 `000-cheatsheet.png`；`page-N.png` 等中间件只落系统临时目录;
+- 源在 frontmatter 后空一行，第一行引用拼接图 `![{title}](./000-cheatsheet.png)`，正文从下一个 H2 起;
 
 ```bash
 node scripts/render-sheet.mjs <目标目录> --source <源材料> --fit 2
@@ -63,6 +64,8 @@ title: {主题} Cheat Sheet
 subtitle: {版本 / 平台}
 source: {来源}
 ---
+
+![{主题} Cheat Sheet](./000-cheatsheet.png)
 
 ## {概念族}
 

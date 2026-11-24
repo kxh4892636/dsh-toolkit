@@ -14,6 +14,8 @@ let crcTable = null;
 const PAGE_SIZES = { letter: [1056, 816], a4: [1123, 794] };
 // 固定产物: 目标目录下的 000-cheatsheet.md 与拼接图 000-cheatsheet.png, 其余都是中间件。
 const SHEET = "000-cheatsheet";
+// 源顶部的自引用图只给站点看，不进版面：渲染时跳过这一行，避免把上一版拼接图嵌进新版。
+const SELF_IMAGE = new RegExp("^!\\[[^\\]]*\\]\\(\\.?/?000-cheatsheet\\.png\\)\\s*$");
 
 function parseArgs(argv) {
   const out = {
@@ -55,6 +57,7 @@ function parseSheet(md) {
   let fenced = false;
   for (const line of body.split(/\r?\n/)) {
     if (line.trimStart().startsWith("```")) fenced = !fenced;
+    if (!fenced && SELF_IMAGE.test(line)) continue;
     const h2 = fenced ? null : line.match(/^##\s+(.*)$/);
     if (h2) {
       cur = { title: h2[1], md: [] };
