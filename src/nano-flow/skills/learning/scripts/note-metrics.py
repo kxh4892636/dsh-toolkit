@@ -6,7 +6,7 @@
 
 口径与 SKILL.md、CHEATSHEET.md 一致:
     - 条目字数: 列表条目去掉 `- ` 后的字符数;
-    - 每节条数: 笔记按 H2 计数, 速查卡 ( *.cheatsheet.md ) 按 H3 计数;
+    - 每节条数: 笔记按 H2 计数, 速查卡 ( 000-cheatsheet.md 或 *.cheatsheet.md ) 按 H3 计数;
     - 参考值固定写在本文件，改动需同步 SKILL.md 与 CHEATSHEET.md。
 
 分位数用线性插值，保留 1 位小数；超限阈值是笔记条目 60 字、速查卡条目 89 字、每节 8 条。
@@ -33,7 +33,14 @@ BULLET = re.compile(r"^\s*[-*] ")
 FENCE = re.compile(r"^\s*```")
 H2 = re.compile(r"^## ")
 H3 = re.compile(r"^### ")
-CHEATSHEET = ".cheatsheet.md"
+# 速查卡源固定叫 000-cheatsheet.md; 兼容旧命名 <主题>.cheatsheet.md
+CHEATSHEET_NAMES = ("000-cheatsheet.md",)
+CHEATSHEET_SUFFIX = ".cheatsheet.md"
+
+
+def is_cheatsheet(file: str) -> bool:
+    name = os.path.basename(file)
+    return name in CHEATSHEET_NAMES or name.endswith(CHEATSHEET_SUFFIX)
 
 
 def collect_files(targets: list[str], excludes: list[str]) -> tuple[list[str], list[str]]:
@@ -84,7 +91,7 @@ def body_lines(rows: list[str]) -> list[str]:
 
 def heading_of(file: str, lines: list[str]) -> re.Pattern[str]:
     """数节的标题级别: 速查卡按 H3, 其余按 H2; 速查卡没有 H3 时退回 H2。"""
-    if file.endswith(CHEATSHEET) and any(H3.match(line) for line in lines):
+    if is_cheatsheet(file) and any(H3.match(line) for line in lines):
         return H3
     return H2
 
@@ -114,7 +121,7 @@ def read_note(file: str) -> dict:
     if current is not None:
         sections.append(current)
 
-    return {"file": file, "sheet": file.endswith(CHEATSHEET), "bullet": bullets, "section": sections}
+    return {"file": file, "sheet": is_cheatsheet(file), "bullet": bullets, "section": sections}
 
 
 def quantile(values: list[float], percent: float) -> float:

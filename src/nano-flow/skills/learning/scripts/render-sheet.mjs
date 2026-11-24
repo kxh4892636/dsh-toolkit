@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // cheatsheet 渲染器：Markdown -> 定尺多栏版面 -> Chrome headless 截图 PNG。
 // Markdown 由随包 marked 解析，版面由 assets/sheet.html 的 CSS 负责，本脚本负责分页与截图。
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { resolve, join, dirname } from "node:path";
 import { inflateSync, deflateSync } from "node:zlib";
@@ -11,11 +12,11 @@ import { marked } from "../assets/vendor/marked.esm.js";
 const HERE = dirname(fileURLToPath(import.meta.url));
 let crcTable = null;
 const PAGE_SIZES = { letter: [1056, 816], a4: [1123, 794] };
-const STITCHED = "cheatsheet.png";
+// 固定产物: 目标目录下的 000-cheatsheet.md 与拼接图 000-cheatsheet.png, 其余都是中间件。
+const SHEET = "000-cheatsheet";
 
 function parseArgs(argv) {
   const out = {
-    out: "sheet-out",
     page: "a4",
     font: 5,
     dpi: 288,
@@ -24,8 +25,7 @@ function parseArgs(argv) {
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--out") out.out = argv[++i];
-    else if (a === "--page") out.page = argv[++i];
+    if (a === "--page") out.page = argv[++i];
     else if (a === "--font") out.font = Number(argv[++i]);
     else if (a === "--dpi") out.dpi = Number(argv[++i]);
     else if (a === "--fit") out.fit = Number(argv[++i]);
@@ -89,7 +89,7 @@ function findChrome(explicit) {
 const opt = parseArgs(process.argv.slice(2));
 if (!opt.input) {
   console.error(
-    "用法: node render-sheet.mjs <sheet.md> [--out 目录] [--fit 页数] [--font 5] [--page a4|letter] [--source 原书.md] [--strict]",
+    "用法: node render-sheet.mjs <目标目录 | 000-cheatsheet.md> [--fit 页数] [--font 5] [--page a4|letter] [--source 原书.md] [--strict]",
   );
   process.exit(1);
 }
@@ -99,7 +99,14 @@ if (!chrome) {
   process.exit(1);
 }
 
-const inputPath = resolve(opt.input);
+const target = resolve(opt.input);
+const targetIsDir = existsSync(target) && statSync(target).isDirectory();
+const targetDir = targetIsDir ? target : dirname(target);
+const inputPath = targetIsDir ? join(targetDir, SHEET + ".md") : target;
+if (!existsSync(inputPath)) {
+  console.error("找不到 " + inputPath + "；目标目录里应当有 " + SHEET + ".md。");
+  process.exit(1);
+}
 const baseUrl = pathToFileURL(join(dirname(inputPath), "/")).href;
 const [pw, ph] = PAGE_SIZES[opt.page] || PAGE_SIZES.a4;
 const { fm, raw } = parseSheet(readFileSync(inputPath, "utf8"));
@@ -126,9 +133,9 @@ const mermaidTag = needMermaid
     "</script>"
   : "";
 
-const outDir = resolve(opt.out);
-mkdirSync(outDir, { recursive: true });
-const htmlPath = join(outDir, "sheet.html");
+// 中间件落系统临时目录, 目标目录只留 md 与 png。
+const workDir = mkdtempSync(join(tmpdir(), "cheatsheet-"));
+const htmlPath = join(workDir, "sheet.html");
 const tpl = readFileSync(join(HERE, "..", "assets", "sheet.html"), "utf8");
 const url = pathToFileURL(htmlPath).href;
 const dsf = opt.dpi / 96;
@@ -206,14 +213,15 @@ if (opt.fit && res.pages > opt.fit)
 
 const pageFiles = [];
 for (let i = 0; i < res.pages; i++) {
-  const file = join(outDir, "page-" + (i + 1) + ".png");
+  const file = join(workDir, "page-" + (i + 1) + ".png");
   execFileSync(chrome, [...flags, "--screenshot=" + file, url + "?page=" + i + "&export=1"], {
     stdio: "ignore",
   });
   pageFiles.push(file);
 }
 const stitched = stitchPng(pageFiles);
-writeFileSync(join(outDir, STITCHED), stitched.data);
+const pngPath = join(targetDir, SHEET + ".png");
+writeFileSync(pngPath, stitched.data);
 
 const chars = sections.reduce((n, s) => n + s.md.replace(/\s/g, "").length, 0);
 const items = sections.reduce(
@@ -281,18 +289,9 @@ if (!opt.fit && res.fill < 0.5)
       " 或补内容",
   );
 console.log(
-  "产物    : " +
-    join(outDir, "page-1.png") +
-    (res.pages > 1 ? " ... page-" + res.pages + ".png" : "") +
-    "；拼接图 " +
-    STITCHED +
-    " " +
-    stitched.width +
-    "×" +
-    stitched.height +
-    "；" +
-    htmlPath,
+  "产物    : " + inputPath + " + " + pngPath + " " + stitched.width + "×" + stitched.height,
 );
+rmSync(workDir, { recursive: true, force: true });
 
 // —— PNG 竖向拼接：只依赖 zlib，不引图像库 ——
 function crc32(buf) {
