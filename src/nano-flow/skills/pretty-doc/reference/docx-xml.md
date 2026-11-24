@@ -169,7 +169,7 @@ lark-cli skills read lark-doc/references/lark-doc-xml.md
 </ul>
 ```
 
-单段文字最多 144 字，最好 89 字以内；列表首词加粗做标签，但别每条都一个句式。
+段落长度与连续段落上限见 [SKILL.md](../SKILL.md) 的「文风」「版式」；列表首词加粗做标签，但别每条都一个句式。
 
 ### 结尾
 
