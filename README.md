@@ -88,9 +88,11 @@ profile 的 `dsh.profile.bundles` 会多出本包及其 `cordis.patch.yml` 挂�
 | 固定提示词 | `prompts/system.md` 与 `.agents/domains/GUIDE.md` 的当前快照拼接, 作为系统提示词段 `order: 1` 注入                                                                            |
 | 每轮提示词 | `prompts/user.md`, 作为运行时上下文在每轮第一次 pre-step 后追加; 不冒充用户消息, UI 以 context 卡片显示                                                                       |
 | 工具       | `nano_flow_create`(domain / plan / note 的目录与模板)、`nano_flow_bind`(绑定/切换 Plan) 与 `nano_flow_check`(校验 + 自动修复 + 生成全部索引)                                  |
-| skill      | `skills/` 动态发现: `to-skill`,`code-spec`,`learning`,`ponytail`,`ponytail-audit`,`ponytail-review`,`ap`,`ad`                                                                 |
+| skill      | `skills/` 动态发现: `to-skill`,`code-spec`,`learning`,`ponytail`,`ponytail-audit`,`ponytail-review`,`ap`,`ad`,`pretty-doc`                                                    |
 | Note 面板  | 输入框上方 dock: 已绑定 Plan 时常驻, **默认展开**、点标题收起, 列未完成 note(中文状态名 + 名称, hover 显示描述/原因/下一步), 列表为空显示「全部完成」; 客户端 5s 轮询宿主路由 |
 | Plan 日志  | 已绑定会话每轮把 `<plan>/log.jsonl` 追加一条 compact 轨迹(user/assistant/工具摘要/usage/seq), 绑定表在 `$DSH_HOME/toolkit/nano-flow-plan-bindings.json`                       |
+
+`pretty-doc` 只可手调：把素材写成飞书文档；画板走 diagram-design 的 SVG，嵌入前用 `scripts/larkify_svg.py` 内联样式（飞书画板不认 CSS，ADR 017）。
 
 **目录布局**
 

@@ -88,9 +88,23 @@ describe("assets", () => {
     const provider = createAssetSkillProvider(skillsRoot);
     const listed = await provider.list({ signal: new AbortController().signal });
     const names = Array.isArray(listed) ? listed.map((candidate) => candidate.name) : [];
+    const prettyDoc = await readFile(join(skillsRoot, "pretty-doc", "SKILL.md"), "utf8");
+    expect(prettyDoc).toContain("disable-model-invocation: true");
+    expect(prettyDoc).toContain("larkify_svg.py");
     expect(names).toEqual(
-      expect.arrayContaining(["to-skill", "code-spec", "learning", "ponytail", "dream"]),
+      expect.arrayContaining([
+        "to-skill",
+        "code-spec",
+        "learning",
+        "ponytail",
+        "dream",
+        "pretty-doc",
+      ]),
     );
+    const prettyDocCandidate = Array.isArray(listed)
+      ? listed.find((candidate) => candidate.name === "pretty-doc")
+      : undefined;
+    expect(prettyDocCandidate?.invocation.modelInvocable).toBe(false);
   });
 });
 
