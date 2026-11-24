@@ -24,6 +24,10 @@ describe("固定提示词的硬规则", () => {
     expect(prompt).toContain("可独立验收的交付单元");
   });
 
+  it("note 开工即 in_progress", () => {
+    expect(prompt).toContain("开工即 `in_progress`");
+  });
+
   it("保留维护循环与 nano_flow_check", () => {
     expect(prompt).toContain("维护循环");
     expect(prompt).toContain("nano_flow_check");

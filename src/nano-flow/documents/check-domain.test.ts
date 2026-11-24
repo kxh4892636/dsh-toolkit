@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { checkWorkspace } from "./check-domain.mjs";
+import { collectDirtyPaths, pacingWarnings } from "./lib/pacing.mjs";
 
 const roots: string[] = [];
 
@@ -615,5 +617,211 @@ describe("自动修复", () => {
     const result = checkWorkspace(root);
     expect(result.ok).toBe(false);
     expect(result.errors.some((issue) => issue.message.includes("reason"))).toBe(true);
+  });
+});
+
+type PacingIssue = { path: string; rule: string; message: string };
+
+/** 正文超过 120 字节才算“动过”：这是判定的下限。 */
+const LONG_BODY = "正文".repeat(80);
+
+const pendingNoteOf = (name: string, body: string, description = "示例 note。"): string =>
+  [
+    "---",
+    `name: '${name}'`,
+    `description: '${description}'`,
+    "status: pending",
+    "reason:",
+    "related_noted: []",
+    "next_step: '继续'",
+    "---",
+    "",
+    `# ${name}`,
+    "",
+    body,
+    "",
+  ].join("\n");
+
+const specOfPlan = (name: string): string =>
+  [
+    "---",
+    `name: '${name}'`,
+    "description: '示例 Plan。'",
+    "status: pending",
+    "---",
+    "",
+    `# ${name}`,
+    "",
+  ].join("\n");
+
+const gitAvailable = spawnSync("git", ["--version"], { encoding: "utf8" }).status === 0;
+
+const git = (root: string, args: string[]): string => {
+  const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} 失败：${result.stderr}`);
+  return result.stdout;
+};
+
+const commitAll = (root: string, message: string): void => {
+  git(root, ["add", "-A"]);
+  git(root, ["-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", message]);
+};
+
+describe("pending 未提交告警的判定", () => {
+  const noteOf = () => ({
+    name: "001-甲",
+    description: "甲的摘要。",
+    status: "pending",
+    body: `# 001-甲\n\n${LONG_BODY}\n`,
+    file: "/workspace/notes/001-甲.md",
+  });
+
+  const run = ({
+    note = {},
+    lifecycle = "active",
+    dirty = new Set(["notes/001-甲.md"]),
+  }: {
+    note?: Record<string, unknown>;
+    lifecycle?: string;
+    dirty?: Set<string> | null;
+  } = {}): PacingIssue[] => {
+    const ctx = { rootDir: "/workspace", warnings: [] as PacingIssue[] };
+    pacingWarnings(ctx, { lifecycle, notes: [{ ...noteOf(), ...note }] }, dirty);
+    return ctx.warnings;
+  };
+
+  it("pending 且正文有未提交改动时提醒一次", () => {
+    const warnings = run();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.rule).toBe("pacing");
+    expect(warnings[0]?.path).toBe("notes/001-甲.md");
+    expect(warnings[0]?.message).toContain("第一次改正文前应置 in_progress");
+  });
+
+  it("in_progress 之后不再提醒", () => {
+    expect(run({ note: { status: "in_progress" } })).toHaveLength(0);
+    expect(run({ note: { status: "completed" } })).toHaveLength(0);
+  });
+
+  it("reference / archived 的 Plan 不提醒", () => {
+    expect(run({ lifecycle: "reference" })).toHaveLength(0);
+    expect(run({ lifecycle: "archived" })).toHaveLength(0);
+  });
+
+  it("占位 note 不提醒", () => {
+    expect(run({ note: { description: "占位，等细化。" } })).toHaveLength(0);
+  });
+
+  it("正文太短的不提醒", () => {
+    expect(run({ note: { body: "# 001-甲\n" } })).toHaveLength(0);
+  });
+
+  it("没有未提交改动、或拿不到 git 信号时不提醒", () => {
+    expect(run({ dirty: new Set() })).toHaveLength(0);
+    expect(run({ dirty: new Set(["notes/002-乙.md"]) })).toHaveLength(0);
+    expect(run({ dirty: null })).toHaveLength(0);
+  });
+});
+
+describe.skipIf(!gitAvailable)("collectDirtyPaths", () => {
+  it("跳过未跟踪与新增，只收已跟踪文件的改动", async () => {
+    const root = await makeRoot();
+    git(root, ["init"]);
+    await write(root, ".agents/domains/demo/001-已跟踪.md", "旧正文\n");
+    commitAll(root, "init");
+
+    await write(root, ".agents/domains/demo/002-新建.md", "新建正文\n");
+    expect([...(collectDirtyPaths(root, ".agents/domains") ?? [])]).toHaveLength(0);
+    git(root, ["add", "-A"]);
+    expect([...(collectDirtyPaths(root, ".agents/domains") ?? [])]).toHaveLength(0);
+
+    await write(root, ".agents/domains/demo/001-已跟踪.md", "新正文\n");
+    expect([...(collectDirtyPaths(root, ".agents/domains") ?? [])]).toEqual([
+      ".agents/domains/demo/001-已跟踪.md",
+    ]);
+  });
+
+  it("rename 只收新路径", async () => {
+    const root = await makeRoot();
+    git(root, ["init"]);
+    await write(root, ".agents/domains/demo/001-旧.md", "正文\n");
+    commitAll(root, "init");
+    git(root, ["mv", ".agents/domains/demo/001-旧.md", ".agents/domains/demo/001-新.md"]);
+    expect([...(collectDirtyPaths(root, ".agents/domains") ?? [])]).toEqual([
+      ".agents/domains/demo/001-新.md",
+    ]);
+  });
+
+  it("工作区是仓库子目录时返回相对工作区的路径", async () => {
+    const root = await makeRoot();
+    git(root, ["init"]);
+    await write(root, "sub/.agents/domains/demo/001-甲.md", "旧正文\n");
+    commitAll(root, "init");
+    await write(root, "sub/.agents/domains/demo/001-甲.md", "新正文\n");
+    expect([...(collectDirtyPaths(join(root, "sub"), ".agents/domains") ?? [])]).toEqual([
+      ".agents/domains/demo/001-甲.md",
+    ]);
+  });
+
+  it("git 不可用时返回 null", () => {
+    const saved = process.env["PATH"] ?? "";
+    process.env["PATH"] = "";
+    try {
+      expect(collectDirtyPaths(tmpdir(), ".agents/domains")).toBeNull();
+    } finally {
+      process.env["PATH"] = saved;
+    }
+  });
+});
+
+describe.skipIf(!gitAvailable)("pending note 的未提交告警", () => {
+  const plan = ".agents/domains/demo/plans/active/2026-01-02-示例";
+
+  it("改正文报警，提交后消失，连跑不产生修复", async () => {
+    const root = await makeRoot();
+    git(root, ["init"]);
+    await domain(root, "demo", "演示");
+    await write(root, `${plan}/spec.md`, specOfPlan("示例"));
+    await write(root, `${plan}/001-甲.md`, pendingNoteOf("001-甲", "还没开始。"));
+    commitAll(root, "init");
+    // 首次 check 会补生成 CONTEXT-MAP / 追踪表 / notes_index，先落成基线。
+    checkWorkspace(root);
+    commitAll(root, "generated");
+
+    await write(root, `${plan}/001-甲.md`, pendingNoteOf("001-甲", LONG_BODY));
+    const first = checkWorkspace(root);
+    expect(first.ok).toBe(true);
+    expect(first.warnings.filter((issue) => issue.rule === "pacing")).toHaveLength(1);
+    expect(first.fixed).toHaveLength(0);
+    expect(first.updated).toHaveLength(0);
+
+    const second = checkWorkspace(root);
+    expect(second.fixed).toHaveLength(0);
+    expect(second.updated).toHaveLength(0);
+    expect(second.warnings.filter((issue) => issue.rule === "pacing")).toHaveLength(1);
+
+    commitAll(root, "note");
+    expect(checkWorkspace(root).warnings.filter((issue) => issue.rule === "pacing")).toHaveLength(
+      0,
+    );
+  });
+});
+
+describe("没有 git 时不报警", () => {
+  it("git 缺失时静默跳过", async () => {
+    const root = await makeRoot();
+    await domain(root, "demo", "演示");
+    const plan = ".agents/domains/demo/plans/active/2026-01-03-示例";
+    await write(root, `${plan}/spec.md`, specOfPlan("示例"));
+    await write(root, `${plan}/001-甲.md`, pendingNoteOf("001-甲", LONG_BODY));
+    const saved = process.env["PATH"] ?? "";
+    process.env["PATH"] = "";
+    try {
+      const result = checkWorkspace(root);
+      expect(result.ok).toBe(true);
+      expect(result.warnings.filter((issue) => issue.rule === "pacing")).toHaveLength(0);
+    } finally {
+      process.env["PATH"] = saved;
+    }
   });
 });
