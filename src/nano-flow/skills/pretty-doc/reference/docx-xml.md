@@ -37,7 +37,8 @@ lark-cli skills read lark-doc/references/lark-doc-xml.md
 
 - `<title>` 唯一且在开头；正文标题从 `<h1>` 开始，层级连续。
 - 每个 h1 前放两个空段 `<p></p><p></p>`；飞书不渲染源码空行。
-- 一级标题用默认黑色；不用 `<hr/>` 切章节。
+- 一、二、三级标题默认黑色；不用 `<hr/>` 切章节。
+- 长文改用 h1 部 / h2 节 / h3 点，见「长文层级」。
 - 标题不编号；确有顺序才手写 `1.` 前缀。
 
 ## 组件
@@ -56,6 +57,26 @@ lark-cli skills read lark-doc/references/lark-doc-xml.md
   </ol>
 </callout>
 ```
+
+### 多观点 callout
+
+一个主题下的 3-5 个观点放在同一个 callout 里：每个观点一行加粗标签 + 一句解释，解释用嵌套 blockquote。
+
+```xml
+<callout emoji="✨" background-color="light-yellow" border-color="yellow">
+  <p><b>角色转换：</b>全栈首先是视角的转换，不是多写一端代码。</p>
+  <blockquote><p>从前端到全栈，要围绕业务目标看需求全流程，避免只看单节点效率。</p></blockquote>
+  <p><b>能力迁移：</b>辅栈能力提升快于单栈，但前期有学习成本。</p>
+  <blockquote><p>前端全栈前期主要成本在平台学习、链路理解和环境调试，短期可能负提效。</p></blockquote>
+  <p><b>规模复制：</b>工程对 AI 越友好，全栈越容易复制。</p>
+  <blockquote><p>仓库结构、服务依赖、AGENTS.md、Skills 越完整，AI 越容易找到正确代码。</p></blockquote>
+</callout>
+```
+
+- 3-5 个观点；一个 callout 只放一个主题，超过 5 个拆成两个。
+- 每个观点先给判断，再给解释；解释比判断长一点，不要反过来。
+- 算一个 callout；全文 callout 总数仍 ≤ 6。
+- 用 `light-yellow` 放洞察，`light-purple` 放结论；不要为了凑色而换色。
 
 ### 双栏
 
@@ -160,6 +181,32 @@ lark-cli skills read lark-doc/references/lark-doc-xml.md
 
 结尾给一个具体动作：谁、做什么、什么时候。没有下一步就不写。
 
+## 长文层级
+
+长文（约 1500 字以上，或内容明显分成几部）用三级结构：
+
+```xml
+<h1>流程与机制</h1>
+<blockquote><p>从目标、分层到培养，一条条拆。</p></blockquote>
+
+<h2>目标制定</h2>
+<blockquote><p>先定交付、业务、人才三个口径。</p></blockquote>
+<p>...</p>
+
+<h3>指标建议</h3>
+<p>...</p>
+
+<h2>业务如何分层</h2>
+<blockquote><p>先按技术复杂度分，再按需求复杂度分。</p></blockquote>
+<p>...</p>
+```
+
+- `h1` 分部（2-4 个），`h2` 分节（每部 2-4 个），`h3` 分点（每节 1-3 个）。
+- `h2` 用名词短语或读者问题都可以；「目标制定」和「目标怎么制定？」都行，不强制问句。
+- 层级连续：h1 → h2 → h3，不跳级；h4 只在确有必要时用。
+- 标题默认黑色，不套 `<span text-color>`；h1 前两个空段，h2/h3 前按需一个空段。
+- 每个 h2 下先用一句 blockquote 交代这节要回答什么，再展开。
+
 ## 配色
 
 | 用途            | emoji | background-color | border-color |
@@ -182,6 +229,7 @@ lark-cli skills read lark-doc/references/lark-doc-xml.md
 - callout 子块只能是 `p` / `ol` / `ul` / `checkbox` / `blockquote`；不能塞 `table` / `grid` / `whiteboard` / `img` / `pre`。
 - grid 各列 `width-ratio` 之和为 1；两列 callout 必须不同色。
 - 表格列宽合计约 1000；合并单元格只在起始格写 `rowspan` / `colspan`。
+- 标题层级连续，不跳级；长文 h1 → h2 → h3，h2 可用名词短语或问句。
 - 文本转义 `&`、`<`、`>`；换行用 `<br/>`；属性必须带引号。
 - 不用 Markdown：`**`、`#`、`>`、`- `、`| 表格`、代码围栏都不会被解析。
 - 颜色名是 `gray`，不是 `grey`；emoji 直接写字符，不写 `bulb` 这类 shortcode。
