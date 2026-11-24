@@ -24,19 +24,19 @@ lark-cli skills read lark-doc/references/lark-doc-xml.md
   </ol>
 </callout>
 
-<p></p><p></p>
+<p></p>
 <h1>背景 | Status Quo</h1>
 <blockquote><p>用户抱怨首页慢，但没人说得清慢在哪。</p></blockquote>
 <p>先补监控：首屏耗时、接口耗时、图片体积，按天记录。</p>
 
-<p></p><p></p>
+<p></p>
 <h1>三个动作</h1>
 <blockquote><p>把等待拆成三段，一段一段压。</p></blockquote>
 ...
 ```
 
 - `<title>` 唯一且在开头；正文标题从 `<h1>` 开始，层级连续。
-- 每个 h1 前放两个空段 `<p></p><p></p>`；飞书不渲染源码空行。
+- 每个 h1 前放一个空段 `<p></p>`；飞书不渲染源码空行。
 - 一、二、三级标题默认黑色；不用 `<hr/>` 切章节。
 - 长文改用 h1 部 / h2 节 / h3 点，见「长文层级」。
 - 标题不编号；确有顺序才手写 `1.` 前缀。
@@ -174,7 +174,7 @@ lark-cli skills read lark-doc/references/lark-doc-xml.md
 ### 结尾
 
 ```xml
-<p></p><p></p>
+<p></p>
 <h1>下一步</h1>
 <p>把监控面板交给值班同学，每周看一次首屏 P95；连续两周超过 1.5 秒就回查。</p>
 ```
@@ -204,7 +204,7 @@ lark-cli skills read lark-doc/references/lark-doc-xml.md
 - `h1` 分部（2-4 个），`h2` 分节（每部 2-4 个），`h3` 分点（每节 1-3 个）。
 - `h2` 用名词短语或读者问题都可以；「目标制定」和「目标怎么制定？」都行，不强制问句。
 - 层级连续：h1 → h2 → h3，不跳级；h4 只在确有必要时用。
-- 标题默认黑色，不套 `<span text-color>`；h1 前两个空段，h2/h3 前按需一个空段。
+- 标题默认黑色，不套 `<span text-color>`；h1 前一个空段，h2/h3 前按需一个空段。
 - 每个 h2 下先用一句 blockquote 交代这节要回答什么，再展开。
 
 ## 配色
