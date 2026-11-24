@@ -35,10 +35,10 @@ disable-model-invocation: true
 
 frontmatter 写 `id` 与 `anki`：`id` 为稳定 UUID；`anki` 缺省 true，`anki: false` 不制卡。
 
+## 4. 收尾
+
+每次调用都跑一次校验脚本并进行修正，覆盖本轮全部产出目录，实测值对照第 3 节的参考值：
+
 ```bash
 python3 scripts/note-metrics.py <笔记目录>... [--detail] [--json] [--exclude <路径子串>]
 ```
-
-## 4. 收尾
-
-逐项核对账本：知识点都有产出或排除理由；UUID 无冲突；相对链接可达；文档格式与构建校验通过。
