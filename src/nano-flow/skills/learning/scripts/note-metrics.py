@@ -4,12 +4,11 @@
 用法:
     python3 note-metrics.py <目录或文件>... [--detail] [--json] [--exclude <路径子串>]
 
-口径与 SKILL.md、CHEATSHEET.md 一致:
-    - 条目字数: 列表条目去掉 `- ` 后的字符数;
+口径与 NOTE.md 一致:
     - 每节条数: 笔记按 H2 计数, 速查卡 ( 000-cheatsheet.md 或 *.cheatsheet.md ) 按 H3 计数;
-    - 参考值固定写在本文件，改动需同步 SKILL.md 与 CHEATSHEET.md。
+    - 参考值固定写在本文件，改动需同步 NOTE.md。
 
-分位数用线性插值，保留 1 位小数；超限阈值是笔记条目 60 字、速查卡条目 89 字、每节 8 条。
+分位数用线性插值，保留 1 位小数；超限阈值是每节 8 条。
 """
 
 from __future__ import annotations
@@ -20,14 +19,11 @@ import re
 import sys
 import unicodedata
 
-# SKILL.md 里的条目与每节分布数值；这里是唯一实现，脚本与文档要保持一致。
-REFERENCE = {
-    "bullet": {"mean": 33.3, "p50": 29.0, "p90": 56.0, "p95": 69.0, "over60": 7.9},
-    "section": {"mean": 3.5, "p50": 3.0, "p90": 6.0, "over8": 2.2},
-}
+# NOTE.md 里的每节条数分布数值；这里是唯一实现，脚本与文档要保持一致。
+REFERENCE = {"section": {"mean": 3.5, "p50": 3.0, "p90": 6.0, "over8": 2.2}}
 
-# 超长阈值: 笔记条目 60 字、速查卡条目 89 字、每节 8 条。
-LIMITS = {"bullet": 60, "sheetBullet": 89, "section": 8}
+# 超长阈值: 每节 8 条。
+LIMITS = {"section": 8}
 
 BULLET = re.compile(r"^\s*[-*] ")
 FENCE = re.compile(r"^\s*```")
@@ -97,7 +93,7 @@ def heading_of(file: str, lines: list[str]) -> re.Pattern[str]:
 
 
 def read_note(file: str) -> dict:
-    """解析一份笔记: 条目字数、每节条数。"""
+    """解析一份笔记: 条目总数、每节条数。"""
     with open(file, encoding="utf-8") as handle:
         rows = handle.read().split("\n")
     if rows and rows[-1] == "":
@@ -105,7 +101,7 @@ def read_note(file: str) -> dict:
 
     lines = body_lines(rows)
     head = heading_of(file, lines)
-    bullets: list[int] = []
+    bullets = 0
     sections: list[int] = []
     current: int | None = None
     for line in lines:
@@ -115,13 +111,13 @@ def read_note(file: str) -> dict:
             current = 0
             continue
         if BULLET.match(line):
-            bullets.append(len(BULLET.sub("", line)))
+            bullets += 1
             if current is not None:
                 current += 1
     if current is not None:
         sections.append(current)
 
-    return {"file": file, "sheet": is_cheatsheet(file), "bullet": bullets, "section": sections}
+    return {"file": file, "bullets": bullets, "section": sections}
 
 
 def quantile(values: list[float], percent: float) -> float:
@@ -144,32 +140,13 @@ def percent(count: int, total: int) -> float:
 
 
 def summarize(notes: list[dict]) -> dict:
-    """汇总为两组分布; 速查卡条目按自己的上限单独统计。"""
-    note_bullets = [value for note in notes if not note["sheet"] for value in note["bullet"]]
-    sheet_bullets = [value for note in notes if note["sheet"] for value in note["bullet"]]
-    bullets = note_bullets + sheet_bullets
+    """汇总每节条数分布。"""
     sections = [value for note in notes for value in note["section"]]
     rnd = lambda value: round(value, 1)  # noqa: E731
     return {
         "files": len(notes),
-        "bulletCount": len(bullets),
+        "bulletCount": sum(note["bullets"] for note in notes),
         "sectionCount": len(sections),
-        "bullet": {
-            "noteCount": len(note_bullets),
-            "mean": rnd(mean(bullets)),
-            "p50": rnd(quantile(bullets, 50)),
-            "p90": rnd(quantile(bullets, 90)),
-            "p95": rnd(quantile(bullets, 95)),
-            "over60": rnd(
-                percent(sum(1 for value in note_bullets if value > LIMITS["bullet"]), len(note_bullets))
-            ),
-        },
-        "sheet": {
-            "count": len(sheet_bullets),
-            "over89": rnd(
-                percent(sum(1 for value in sheet_bullets if value > LIMITS["sheetBullet"]), len(sheet_bullets))
-            ),
-        },
         "section": {
             "mean": rnd(mean(sections)),
             "p50": rnd(quantile(sections, 50)),
@@ -181,23 +158,12 @@ def summarize(notes: list[dict]) -> dict:
 
 def rows(summary: dict) -> list[list[str]]:
     one = lambda value: f"{value:.1f}"  # noqa: E731
-    body = [
-        ["条目字数", "均值", one(REFERENCE["bullet"]["mean"]), one(summary["bullet"]["mean"])],
-        ["", "P50", one(REFERENCE["bullet"]["p50"]), one(summary["bullet"]["p50"])],
-        ["", "P90", one(REFERENCE["bullet"]["p90"]), one(summary["bullet"]["p90"])],
-        ["", "P95", one(REFERENCE["bullet"]["p95"]), one(summary["bullet"]["p95"])],
-    ]
-    if summary["bullet"]["noteCount"]:
-        body.append(["", "超 60 字占比 %", one(REFERENCE["bullet"]["over60"]), one(summary["bullet"]["over60"])])
-    if summary["sheet"]["count"]:
-        body.append(["", "超 89 字占比 %", "—", one(summary["sheet"]["over89"])])
-    body += [
+    return [
         ["每节条数", "均值", one(REFERENCE["section"]["mean"]), one(summary["section"]["mean"])],
         ["", "P50", one(REFERENCE["section"]["p50"]), one(summary["section"]["p50"])],
         ["", "P90", one(REFERENCE["section"]["p90"]), one(summary["section"]["p90"])],
         ["", "超 8 条占比 %", one(REFERENCE["section"]["over8"]), one(summary["section"]["over8"])],
     ]
-    return body
 
 
 def width_of(text: str) -> int:
@@ -259,7 +225,7 @@ def main(argv: list[str]) -> int:
         payload = {"summary": summary}
         if detail:
             payload["notes"] = [
-                {"file": note["file"], "bullets": len(note["bullet"]), "sections": len(note["section"])}
+                {"file": note["file"], "bullets": note["bullets"], "sections": len(note["section"])}
                 for note in notes
             ]
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
@@ -268,7 +234,7 @@ def main(argv: list[str]) -> int:
     if detail:
         sys.stdout.write("\n逐篇现状（小节数 / 条目数）\n")
         for note in sorted(notes, key=lambda item: len(item["section"]), reverse=True):
-            sys.stdout.write(f"{len(note['section']):>3} / {len(note['bullet']):>3}  {note['file']}\n")
+            sys.stdout.write(f"{len(note['section']):>3} / {note['bullets']:>3}  {note['file']}\n")
     return 0
 
 

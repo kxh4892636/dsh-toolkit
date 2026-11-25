@@ -1,10 +1,12 @@
 # Anki
 
+卡片以 [NOTE.md](NOTE.md) 产出的知识笔记为来源，`id` / `anki` 取自笔记 frontmatter，这里只读。
+
 ## 1. 制卡准备
 
 从工作区事实和用户输入进行默认推断, 卡点进行询问：
 
-- anki 内容来源。
+- 制卡的笔记目录，缺省为本轮产出的笔记目录；
 - anki 卡片/牌组配置;
 - 使用 `nnf anki` / AnkiConnect 进行去重;
 
