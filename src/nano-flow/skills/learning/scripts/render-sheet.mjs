@@ -12,6 +12,8 @@ import { marked } from "../assets/vendor/marked.esm.js";
 const HERE = dirname(fileURLToPath(import.meta.url));
 let crcTable = null;
 const PAGE_SIZES = { letter: [1056, 816], a4: [1123, 794] };
+// 版面固定 4 栏：栏数不开放为参数，页数是唯一的旋钮。
+const COLUMNS = 4;
 // 固定产物: 目标目录下的 000-cheatsheet.md 与拼接图 000-cheatsheet.png, 其余都是中间件。
 const SHEET = "000-cheatsheet";
 // 源顶部的自引用图只给站点看，不进版面：渲染时跳过这一行，避免把上一版拼接图嵌进新版。
@@ -154,9 +156,7 @@ const flags = [
 function layout(fontPt, budget) {
   const data = {
     title: fm.title || "Cheat Sheet",
-    subtitle: fm.subtitle || "",
-    source: fm.source || "",
-    columns: 5,
+    columns: COLUMNS,
     fontPx: (fontPt * 96) / 72,
     geom: { pw, ph, pad: 12, gap: 10 },
     sections: sections.map((s) => ({ title: s.title, html: s.html })),
@@ -243,7 +243,9 @@ const pct = (n) => n.toFixed(1) + "%";
 console.log(
   "sheet   : " +
     sections.length +
-    " 节 / 5 栏 / " +
+    " 节 / " +
+    COLUMNS +
+    " 栏 / " +
     res.pages +
     " 页 / " +
     chars.toLocaleString() +

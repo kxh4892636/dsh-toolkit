@@ -43,14 +43,6 @@
         color: #444;
         white-space: nowrap;
       }
-      .ft {
-        position: absolute;
-        left: var(--pad);
-        right: var(--pad);
-        bottom: 4px;
-        font-size: calc(var(--fs) * 0.85);
-        color: #555;
-      }
       .cols {
         margin-top: var(--gap-top);
         display: flex;
@@ -89,7 +81,9 @@
       }
       .sec .st {
         border-left: 0;
-        padding-left: 0;
+        padding: 1px 3px;
+        margin: 0 -3px 1.5px;
+        background: #d4d4d4;
       }
       .sec h4,
       .sec h5,
@@ -106,13 +100,13 @@
       .sec ul,
       .sec ol {
         margin: 1px 0;
-        padding-left: 1.15em;
+        padding-left: 0;
       }
       .sec ul {
-        list-style: disc;
+        list-style: disc inside;
       }
       .sec ol {
-        list-style: decimal;
+        list-style: decimal inside;
       }
       .sec li {
         font-size: var(--fs);
@@ -222,11 +216,10 @@
         var COLS = D.columns,
           FS = D.fontPx,
           TITLE = Math.max(14, FS * 2),
-          HEAD = Math.round(TITLE * 1.1) + 8,
-          FOOT = D.source ? 11 : 0;
+          HEAD = Math.round(TITLE * 1.1) + 8;
         var GAP_TOP = 8,
           GAP_BOTTOM = 18;
-        var COLH = PH - PAD * 2 - HEAD - FOOT - GAP_TOP - GAP_BOTTOM;
+        var COLH = PH - PAD * 2 - HEAD - GAP_TOP - GAP_BOTTOM;
         var COLW = (PW - PAD * 2 - GAP * (COLS - 1)) / COLS;
         var rs = document.documentElement.style;
         rs.setProperty("--pw", PW + "px");
@@ -395,7 +388,7 @@
           var b = document.createElement("b");
           b.textContent = D.title;
           var sp = document.createElement("span");
-          sp.textContent = D.subtitle + " | " + (pi + 1) + " / " + pages.length;
+          sp.textContent = `${pi + 1} / ${pages.length}`;
           hd.appendChild(b);
           hd.appendChild(sp);
           page.appendChild(hd);
@@ -405,12 +398,6 @@
             colsWrap.appendChild(c);
           });
           page.appendChild(colsWrap);
-          if (D.source) {
-            var ft = document.createElement("div");
-            ft.className = "ft";
-            ft.textContent = D.source;
-            page.appendChild(ft);
-          }
           stage.appendChild(page);
         });
         box.remove();
