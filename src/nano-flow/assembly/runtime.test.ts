@@ -81,7 +81,6 @@ describe("assets", () => {
     expect((await stat(assetsCheckScript(assetsRoot))).isFile()).toBe(true);
     const skillsRoot = assetsSkillsRoot(assetsRoot);
     const dream = await readFile(join(skillsRoot, "dream", "SKILL.md"), "utf8");
-    expect(dream).toContain("disable-model-invocation: true");
     expect(dream).toContain("nano_flow_dream");
     expect(dream).toContain("python3");
     expect(dream).toContain("subagent");
@@ -105,6 +104,10 @@ describe("assets", () => {
       ? listed.find((candidate) => candidate.name === "pretty-doc")
       : undefined;
     expect(prettyDocCandidate?.invocation.modelInvocable).toBe(false);
+    const dreamCandidate = Array.isArray(listed)
+      ? listed.find((candidate) => candidate.name === "dream")
+      : undefined;
+    expect(dreamCandidate?.invocation.modelInvocable).toBe(true);
   });
 });
 

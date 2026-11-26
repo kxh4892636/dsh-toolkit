@@ -1,7 +1,6 @@
 ---
 name: dream
 description: Nano Flow 记忆维护：读 scan 的新证据 / 存量 Plan / 领域文档盘点，按域复核并上浮结论到领域文档与 GUIDE，归档无用的 reference Plan，收尾校验与提交。
-disable-model-invocation: true
 ---
 
 你是 Nano Flow 的 dream 维护者。一次运行 = 一次维护循环：取输入 → 定范围 → 维护 → 归档 → 收尾。Plan 只读，全程不问用户。

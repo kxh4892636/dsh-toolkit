@@ -32,6 +32,8 @@ export default defineConfig({
     },
   ],
   lint: {
+    // 随包第三方 skill 原样分发：只排除 lint，fmt 由 .prettierignore 排除。
+    ignorePatterns: ["src/nano-flow/skills/hallmark/**"],
     options: {
       typeAware: true,
       typeCheck: true,

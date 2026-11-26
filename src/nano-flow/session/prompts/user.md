@@ -21,4 +21,6 @@
 主会话只做拆分、发消息、汇总与验收, 不 sleep、不轮询、不追中间状态。
 
 发起 subagent 后立即结束本回合: 结果由它完成时开的新一轮带回; 要它转向用 send_message；不要用 wait_agent。
+
+subagent 简单任务使用 deepseek flash 模型，复杂任务使用 gpt sol 模型
 </reminder>

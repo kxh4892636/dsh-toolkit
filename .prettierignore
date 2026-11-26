@@ -1,4 +1,5 @@
 # 随包第三方产物，原样分发，不参与格式化
 src/nano-flow/skills/learning/assets/vendor/
+src/nano-flow/skills/hallmark/
 dist/
 node_modules/
